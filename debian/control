@@ -2,7 +2,8 @@ Source: pipewire
 Section: libs
 Priority: optional
 Maintainer: Utopia Maintenance Team <pkg-utopia-maintainers@alioth-lists.debian.net>
-Uploaders: Jeremy Bicha <jbicha@debian.org>
+Uploaders: Jeremy Bicha <jbicha@debian.org>,
+           Dylan Aïssi <daissi@debian.org>
 Build-Depends: debhelper-compat (= 13),
                doxygen <!nodoc>,
                graphviz <!nodoc>,
