@@ -4,6 +4,7 @@ pipewire (0.3.52-1) UNRELEASED; urgency=medium
   * New upstream release
   * libpipewire-0.3-0: Demote pipewire from Recommends to Suggests
       (Closes: #1011130)
+  * pipewire-pulse: Suggests for libspa-0.2-bluetooth
   * Bump libxfixes-dev version requirement to 6.0.0
   * Disable LC3plus codec
   * Update symbols file
