@@ -154,6 +154,7 @@ libpipewire-0.3.so.0 libpipewire-0.3-0 #MINVER#
  pw_impl_client_get_user_data@Base 0.3.1
  pw_impl_client_register@Base 0.3.1
  pw_impl_client_set_busy@Base 0.3.1
+ pw_impl_client_unref@Base 0.3.52
  pw_impl_client_update_permissions@Base 0.3.1
  pw_impl_client_update_properties@Base 0.3.1
  pw_impl_core_add_listener@Base 0.3.1
@@ -349,6 +350,7 @@ libpipewire-0.3.so.0 libpipewire-0.3-0 #MINVER#
  pw_proxy_set_bound_id@Base 0.3.1
  pw_proxy_sync@Base 0.3.1
  pw_proxy_unref@Base 0.3.1
+ pw_reallocarray@Base 0.3.52
  pw_resource_add_listener@Base 0.3.1
  pw_resource_add_object_listener@Base 0.3.1
  pw_resource_destroy@Base 0.3.1
@@ -367,8 +369,10 @@ libpipewire-0.3.so.0 libpipewire-0.3-0 #MINVER#
  pw_resource_install_marshal@Base 0.3.1
  pw_resource_new@Base 0.3.1
  pw_resource_ping@Base 0.3.1
+ pw_resource_ref@Base 0.3.52
  pw_resource_remove@Base 0.3.1
  pw_resource_set_bound_id@Base 0.3.1
+ pw_resource_unref@Base 0.3.52
  pw_set_domain@Base 0.3.26
  pw_split_strv@Base 0.3.1
  pw_split_walk@Base 0.3.1
