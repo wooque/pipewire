@@ -466,7 +466,9 @@ int spa_alsa_init(struct state *state, const struct spa_dict *info)
 	}
 	if (state->clock_name[0] == '\0')
 		snprintf(state->clock_name, sizeof(state->clock_name),
-				"api.alsa.%u", state->card_index);
+				"api.alsa.%s-%u",
+				state->stream == SND_PCM_STREAM_PLAYBACK ? "p" : "c",
+				state->card_index);
 
 	if (state->stream == SND_PCM_STREAM_PLAYBACK) {
 		state->is_iec958 = spa_strstartswith(state->props.device, "iec958");
@@ -1235,7 +1237,7 @@ spa_alsa_enum_format(struct state *state, int seq, uint32_t start, uint32_t num,
 
 int spa_alsa_set_format(struct state *state, struct spa_audio_info *fmt, uint32_t flags)
 {
-	unsigned int rrate, rchannels, val;
+	unsigned int rrate, rchannels, val, rscale = 1;
 	snd_pcm_uframes_t period_size;
 	int err, dir;
 	snd_pcm_hw_params_t *params;
@@ -1322,21 +1324,26 @@ int spa_alsa_set_format(struct state *state, struct spa_audio_info *fmt, uint32_
 		case 4:
 			rformat = SND_PCM_FORMAT_DSD_U32_BE;
 			rrate /= 4;
+			rscale = 4;
 			break;
 		case -4:
 			rformat = SND_PCM_FORMAT_DSD_U32_LE;
 			rrate /= 4;
+			rscale = 4;
 			break;
 		case 2:
 			rformat = SND_PCM_FORMAT_DSD_U16_BE;
 			rrate /= 2;
+			rscale = 2;
 			break;
 		case -2:
 			rformat = SND_PCM_FORMAT_DSD_U16_LE;
 			rrate /= 2;
+			rscale = 2;
 			break;
 		case 1:
 			rformat = SND_PCM_FORMAT_DSD_U8;
+			rscale = 1;
 			break;
 		default:
 			return -ENOTSUP;
@@ -1430,6 +1437,7 @@ int spa_alsa_set_format(struct state *state, struct spa_audio_info *fmt, uint32_
 	state->channels = rchannels;
 	state->rate = rrate;
 	state->frame_size = snd_pcm_format_physical_width(rformat) / 8;
+	state->frame_scale = rscale;
 	state->planar = planar;
 	state->blocks = 1;
 	if (planar)
@@ -1477,7 +1485,7 @@ int spa_alsa_set_format(struct state *state, struct spa_audio_info *fmt, uint32_
 	} else {
 		CHECK(snd_pcm_hw_params_get_buffer_size_max(params, &state->buffer_frames), "get_buffer_size_max");
 
-		state->buffer_frames = SPA_MIN(state->buffer_frames, state->quantum_limit * 4);
+		state->buffer_frames = SPA_MIN(state->buffer_frames, state->quantum_limit * 4)* state->frame_scale;
 
 		CHECK(snd_pcm_hw_params_set_buffer_size_min(hndl, params, &state->buffer_frames), "set_buffer_size_min");
 		CHECK(snd_pcm_hw_params_set_buffer_size_near(hndl, params, &state->buffer_frames), "set_buffer_size_near");
@@ -1785,9 +1793,11 @@ static int update_time(struct state *state, uint64_t current_time, snd_pcm_sfram
 	if (err > state->max_error) {
 		err = state->max_error;
 		state->alsa_sync = true;
+		state->alsa_sync_warning = (diff == 0);
 	} else if (err < -state->max_error) {
 		err = -state->max_error;
 		state->alsa_sync = true;
+		state->alsa_sync_warning = (diff == 0);
 	}
 
 	if (!follower || state->matching)
@@ -1854,6 +1864,11 @@ static int setup_matching(struct state *state)
 		state->matching = false;
 
 	state->resample = ((uint32_t)state->rate != state->rate_denom) || state->matching;
+
+	spa_log_info(state->log, "driver clock:'%s'@%d our clock:'%s'@%d matching:%d resample:%d",
+			state->position->clock.name, state->rate_denom,
+			state->clock_name, state->rate,
+			state->matching, state->resample);
 	return 0;
 }
 
@@ -1867,6 +1882,7 @@ static inline void check_position_config(struct state *state)
 		state->duration = state->position->clock.duration;
 		state->rate_denom = state->position->clock.rate.denom;
 		state->threshold = (state->duration * state->rate + state->rate_denom-1) / state->rate_denom;
+		state->max_error = SPA_MAX(256.0f, state->threshold / 2.0f);
 		state->resample = ((uint32_t)state->rate != state->rate_denom) || state->matching;
 		state->alsa_sync = true;
 	}
@@ -1893,9 +1909,18 @@ int spa_alsa_write(struct state *state)
 		if (SPA_UNLIKELY((res = get_status(state, current_time, &delay, &target)) < 0))
 			return res;
 
+		if (SPA_UNLIKELY((res = update_time(state, current_time, delay, target, true)) < 0))
+			return res;
+
 		if (SPA_UNLIKELY(state->alsa_sync)) {
-			spa_log_warn(state->log, "%s: follower delay:%ld target:%ld thr:%u, resync",
-					state->props.device, delay, target, state->threshold);
+			if (SPA_UNLIKELY(state->alsa_sync_warning)) {
+				spa_log_warn(state->log, "%s: follower delay:%ld target:%ld thr:%u, resync",
+						state->props.device, delay, target, state->threshold);
+				state->alsa_sync_warning = false;
+			} else
+				spa_log_info(state->log, "%s: follower delay:%ld target:%ld thr:%u, resync",
+						state->props.device, delay, target, state->threshold);
+
 			if (delay > target)
 				snd_pcm_rewind(state->hndl, delay - target);
 			else if (delay < target)
@@ -1903,8 +1928,6 @@ int spa_alsa_write(struct state *state)
 			delay = target;
 			state->alsa_sync = false;
 		}
-		if (SPA_UNLIKELY((res = update_time(state, current_time, delay, target, true)) < 0))
-			return res;
 	}
 
 	total_written = 0;
@@ -2131,9 +2154,18 @@ int spa_alsa_read(struct state *state)
 
 		avail = delay;
 
+		if (SPA_UNLIKELY((res = update_time(state, current_time, delay, target, true)) < 0))
+			return res;
+
 		if (state->alsa_sync) {
-			spa_log_warn(state->log, "%s: follower delay:%lu target:%lu thr:%u, resync",
-					state->props.device, delay, target, threshold);
+			if (SPA_UNLIKELY(state->alsa_sync_warning)) {
+				spa_log_warn(state->log, "%s: follower delay:%lu target:%lu thr:%u, resync",
+						state->props.device, delay, target, threshold);
+				state->alsa_sync_warning = false;
+			} else
+				spa_log_info(state->log, "%s: follower delay:%lu target:%lu thr:%u, resync",
+						state->props.device, delay, target, threshold);
+
 			if (delay < target)
 				max_read = target - delay;
 			else if (delay > target)
@@ -2141,9 +2173,6 @@ int spa_alsa_read(struct state *state)
 			delay = target;
 			state->alsa_sync = false;
 		}
-
-		if ((res = update_time(state, current_time, delay, target, true)) < 0)
-			return res;
 
 		if (avail < state->read_size)
 			max_read = 0;
@@ -2406,11 +2435,10 @@ int spa_alsa_start(struct state *state)
 	state->following = is_following(state);
 	setup_matching(state);
 
+	spa_dll_init(&state->dll);
 	state->threshold = (state->duration * state->rate + state->rate_denom-1) / state->rate_denom;
 	state->last_threshold = state->threshold;
-
-	spa_dll_init(&state->dll);
-	state->max_error = (256.0 * state->rate) / state->rate_denom;
+	state->max_error = SPA_MAX(256.0f, state->threshold / 2.0f);
 
 	spa_log_debug(state->log, "%p: start %d duration:%d rate:%d follower:%d match:%d resample:%d",
 			state, state->threshold, state->duration, state->rate_denom,

@@ -172,6 +172,7 @@ struct stream {
 	unsigned int driving:1;
 	unsigned int using_trigger:1;
 	unsigned int trigger:1;
+	int in_set_control;
 };
 
 static int get_param_index(uint32_t id)
@@ -543,7 +544,9 @@ static int impl_set_param(void *object, uint32_t id, uint32_t flags, const struc
 	if (id != SPA_PARAM_Props)
 		return -ENOTSUP;
 
-	pw_stream_emit_param_changed(stream, id, param);
+	if (impl->in_set_control == 0)
+		pw_stream_emit_param_changed(stream, id, param);
+
 	return 0;
 }
 
@@ -1771,7 +1774,6 @@ pw_stream_connect(struct pw_stream *stream,
 	struct stream *impl = SPA_CONTAINER_OF(stream, struct stream, this);
 	struct pw_impl_factory *factory;
 	struct pw_properties *props = NULL;
-	struct pw_impl_node *follower;
 	const char *str;
 	uint32_t i;
 	int res;
@@ -1920,14 +1922,6 @@ pw_stream_connect(struct pw_stream *stream,
 		pw_properties_set(props, "channelmix.normalize", "true");
 	}
 
-	follower = pw_context_create_node(impl->context, pw_properties_copy(props), 0);
-	if (follower == NULL) {
-		res = -errno;
-		goto error_node;
-	}
-
-	pw_impl_node_set_implementation(follower, &impl->impl_node);
-
 	if (impl->media_type == SPA_MEDIA_TYPE_audio) {
 		factory = pw_context_find_factory(impl->context, "adapter");
 		if (factory == NULL) {
@@ -1935,7 +1929,8 @@ pw_stream_connect(struct pw_stream *stream,
 			res = -ENOENT;
 			goto error_node;
 		}
-		pw_properties_setf(props, "adapt.follower.node", "pointer:%p", follower);
+		pw_properties_setf(props, "adapt.follower.spa-node", "pointer:%p",
+				&impl->impl_node);
 		pw_properties_set(props, "object.register", "false");
 		impl->node = pw_impl_factory_create_object(factory,
 				NULL,
@@ -1949,9 +1944,13 @@ pw_stream_connect(struct pw_stream *stream,
 			goto error_node;
 		}
 	} else {
-		impl->node = follower;
-		pw_properties_free(props);
+		impl->node = pw_context_create_node(impl->context, props, 0);
 		props = NULL;
+		if (impl->node == NULL) {
+			res = -errno;
+			goto error_node;
+		}
+		pw_impl_node_set_implementation(impl->node, &impl->impl_node);
 	}
 	pw_impl_node_set_active(impl->node,
 			!SPA_FLAG_IS_SET(impl->flags, PW_STREAM_FLAG_INACTIVE));
@@ -2078,6 +2077,9 @@ int pw_stream_set_control(struct pw_stream *stream, uint32_t id, uint32_t n_valu
 	struct spa_pod *pod;
 	struct control *c;
 
+	if (impl->node == NULL)
+		return -EIO;
+
 	va_start(varargs, values);
 
 	spa_pod_builder_push_object(&b, &f[0], SPA_TYPE_OBJECT_Props, SPA_PARAM_Props);
@@ -2117,7 +2119,9 @@ int pw_stream_set_control(struct pw_stream *stream, uint32_t id, uint32_t n_valu
 
 	va_end(varargs);
 
+	impl->in_set_control++;
 	pw_impl_node_set_param(impl->node, SPA_PARAM_Props, 0, pod);
+	impl->in_set_control--;
 
 	return 0;
 }

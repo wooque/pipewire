@@ -3205,6 +3205,30 @@ jack_client_t * jack_client_open (const char *client_name,
 	varargs_parse(client, options, ap);
 	va_end(ap);
 
+	snprintf(client->name, sizeof(client->name), "pw-%s", client_name);
+
+	pthread_mutex_init(&client->context.lock, NULL);
+	spa_list_init(&client->context.objects);
+
+	client->node_id = SPA_ID_INVALID;
+
+	client->buffer_frames = (uint32_t)-1;
+	client->sample_rate = (uint32_t)-1;
+	client->latency = SPA_FRACTION(-1, -1);
+
+	spa_list_init(&client->mix);
+	spa_list_init(&client->free_mix);
+
+	spa_list_init(&client->free_ports);
+	pw_map_init(&client->ports[SPA_DIRECTION_INPUT], 32, 32);
+	pw_map_init(&client->ports[SPA_DIRECTION_OUTPUT], 32, 32);
+
+	spa_list_init(&client->links);
+	client->driver_id = SPA_ID_INVALID;
+
+	spa_list_init(&client->rt.target_links);
+	pthread_mutex_init(&client->rt_lock, NULL);
+
 	if (client->server_name != NULL &&
 	    spa_streq(client->server_name, "default"))
 		client->server_name = NULL;
@@ -3219,8 +3243,6 @@ jack_client_t * jack_client_open (const char *client_name,
 	if (client->props == NULL)
 		goto no_props;
 
-	client->node_id = SPA_ID_INVALID;
-	snprintf(client->name, sizeof(client->name), "pw-%s", client_name);
 	client->context.loop = pw_thread_loop_new(client->name, NULL);
 	client->context.l = pw_thread_loop_get_loop(client->context.loop);
 	client->context.context = pw_context_new(
@@ -3238,30 +3260,6 @@ jack_client_t * jack_client_open (const char *client_name,
 
 	pw_context_conf_section_match_rules(client->context.context, "jack.rules",
 			&client->props->dict, execute_match, client);
-
-	client->show_monitor = pw_properties_get_bool(client->props, "jack.show-monitor", true);
-	client->merge_monitor = pw_properties_get_bool(client->props, "jack.merge-monitor", false);
-	client->short_name = pw_properties_get_bool(client->props, "jack.short-name", false);
-	client->filter_name = pw_properties_get_bool(client->props, "jack.filter-name", false);
-	client->locked_process = pw_properties_get_bool(client->props, "jack.locked-process", true);
-	client->default_as_system = pw_properties_get_bool(client->props, "jack.default-as-system", false);
-
-	client->self_connect_mode = SELF_CONNECT_ALLOW;
-	if ((str = pw_properties_get(client->props, "jack.self-connect-mode")) != NULL) {
-		if (spa_streq(str, "fail-external"))
-			client->self_connect_mode = SELF_CONNECT_FAIL_EXT;
-		else if (spa_streq(str, "ignore-external"))
-			client->self_connect_mode = SELF_CONNECT_IGNORE_EXT;
-		else if (spa_streq(str, "fail-all"))
-			client->self_connect_mode = SELF_CONNECT_FAIL_ALL;
-		else if (spa_streq(str, "ignore-all"))
-			client->self_connect_mode = SELF_CONNECT_IGNORE_ALL;
-	}
-	client->rt_max = pw_properties_get_int32(client->props, "rt.prio", DEFAULT_RT_MAX);
-
-	pthread_mutex_init(&client->context.lock, NULL);
-	pthread_mutex_init(&client->rt_lock, NULL);
-	spa_list_init(&client->context.objects);
 
 	support = pw_context_get_support(client->context.context, &n_support);
 
@@ -3291,20 +3289,6 @@ jack_client_t * jack_client_open (const char *client_name,
 	pw_context_set_object(client->context.context,
 			SPA_TYPE_INTERFACE_ThreadUtils,
 			&client->context.thread_utils);
-
-	spa_list_init(&client->links);
-	spa_list_init(&client->rt.target_links);
-
-	client->buffer_frames = (uint32_t)-1;
-	client->sample_rate = (uint32_t)-1;
-	client->latency = SPA_FRACTION(-1, -1);
-
-        spa_list_init(&client->mix);
-        spa_list_init(&client->free_mix);
-
-	pw_map_init(&client->ports[SPA_DIRECTION_INPUT], 32, 32);
-	pw_map_init(&client->ports[SPA_DIRECTION_OUTPUT], 32, 32);
-	spa_list_init(&client->free_ports);
 
 	pw_thread_loop_start(client->context.loop);
 
@@ -3393,6 +3377,26 @@ jack_client_t * jack_client_open (const char *client_name,
 			0, NULL, &client->info);
 	client->info.change_mask = 0;
 
+	client->show_monitor = pw_properties_get_bool(client->props, "jack.show-monitor", true);
+	client->merge_monitor = pw_properties_get_bool(client->props, "jack.merge-monitor", false);
+	client->short_name = pw_properties_get_bool(client->props, "jack.short-name", false);
+	client->filter_name = pw_properties_get_bool(client->props, "jack.filter-name", false);
+	client->locked_process = pw_properties_get_bool(client->props, "jack.locked-process", true);
+	client->default_as_system = pw_properties_get_bool(client->props, "jack.default-as-system", false);
+
+	client->self_connect_mode = SELF_CONNECT_ALLOW;
+	if ((str = pw_properties_get(client->props, "jack.self-connect-mode")) != NULL) {
+		if (spa_streq(str, "fail-external"))
+			client->self_connect_mode = SELF_CONNECT_FAIL_EXT;
+		else if (spa_streq(str, "ignore-external"))
+			client->self_connect_mode = SELF_CONNECT_IGNORE_EXT;
+		else if (spa_streq(str, "fail-all"))
+			client->self_connect_mode = SELF_CONNECT_FAIL_ALL;
+		else if (spa_streq(str, "ignore-all"))
+			client->self_connect_mode = SELF_CONNECT_IGNORE_ALL;
+	}
+	client->rt_max = pw_properties_get_int32(client->props, "rt.prio", DEFAULT_RT_MAX);
+
 	if (status)
 		*status = 0;
 
@@ -3432,7 +3436,7 @@ server_failed:
 exit_unlock:
 	pw_thread_loop_unlock(client->context.loop);
 exit:
-	free(client);
+	jack_client_close((jack_client_t *) client);
 	return NULL;
 disabled:
 	if (status)
@@ -3467,20 +3471,29 @@ int jack_client_close (jack_client_t *client)
 
 	res = jack_deactivate(client);
 
-	pw_thread_loop_stop(c->context.loop);
+	if (c->context.loop)
+		pw_thread_loop_stop(c->context.loop);
 
 	if (c->registry) {
 		spa_hook_remove(&c->registry_listener);
 		pw_proxy_destroy((struct pw_proxy*)c->registry);
 	}
 	if (c->metadata && c->metadata->proxy) {
+		spa_hook_remove(&c->metadata->listener);
+		spa_hook_remove(&c->metadata->proxy_listener);
 		pw_proxy_destroy((struct pw_proxy*)c->metadata->proxy);
 	}
-	spa_hook_remove(&c->core_listener);
-	pw_core_disconnect(c->core);
-	pw_context_destroy(c->context.context);
 
-	pw_thread_loop_destroy(c->context.loop);
+	if (c->core) {
+		spa_hook_remove(&c->core_listener);
+		pw_core_disconnect(c->core);
+	}
+
+	if (c->context.context)
+		pw_context_destroy(c->context.context);
+
+	if (c->context.loop)
+		pw_thread_loop_destroy(c->context.loop);
 
 	pw_log_debug("%p: free", client);
 
@@ -5768,17 +5781,21 @@ SPA_EXPORT
 int jack_set_sync_timeout (jack_client_t *client,
 			   jack_time_t timeout)
 {
+	int res = 0;
 	struct client *c = (struct client *) client;
 	struct pw_node_activation *a;
 
 	spa_return_val_if_fail(c != NULL, -EINVAL);
 
+	pw_thread_loop_lock(c->context.loop);
+
 	if ((a = c->activation) == NULL)
-		return -EIO;
+		res = -EIO;
+	else
+		a->sync_timeout = timeout;
+	pw_thread_loop_unlock(c->context.loop);
 
-	ATOMIC_STORE(a->sync_timeout, timeout);
-
-	return 0;
+	return res;
 }
 
 SPA_EXPORT

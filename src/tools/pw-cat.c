@@ -709,10 +709,11 @@ on_param_changed(void *userdata, uint32_t id, const struct spa_pod *param)
 	data->stride = data->dsf.layout.channels * SPA_ABS(data->dsf.layout.interleave);
 
 	if (data->verbose) {
-		printf("DSD: channels:%d bitorder:%s interleave:%d\n",
+		printf("DSD: channels:%d bitorder:%s interleave:%d stride:%d\n",
 				data->dsf.layout.channels,
 				data->dsf.layout.lsb ? "lsb" : "msb",
-				data->dsf.layout.interleave);
+				data->dsf.layout.interleave,
+				data->stride);
 	}
 }
 
@@ -849,6 +850,7 @@ static const struct option long_options[] = {
 	{ "media-role",		required_argument, NULL, OPT_MEDIA_ROLE },
 	{ "target",		required_argument, NULL, OPT_TARGET },
 	{ "latency",		required_argument, NULL, OPT_LATENCY },
+	{ "properties",		required_argument, NULL, 'P' },
 
 	{ "rate",		required_argument, NULL, OPT_RATE },
 	{ "channels",		required_argument, NULL, OPT_CHANNELS },
@@ -867,7 +869,7 @@ static void show_usage(const char *name, bool is_error)
 	fp = is_error ? stderr : stdout;
 
         fprintf(fp,
-	   _("%s [options] <file>\n"
+	   _("%s [options] [<file>|-]\n"
              "  -h, --help                            Show this help\n"
              "      --version                         Show version\n"
              "  -v, --verbose                         Enable verbose operations\n"
@@ -884,6 +886,7 @@ static void show_usage(const char *name, bool is_error)
 	     "                                          Xunit (unit = s, ms, us, ns)\n"
 	     "                                          or direct samples (256)\n"
 	     "                                          the rate is the one of the source file\n"
+	     "  -P  --properties                      Set node properties\n"
 	     "\n"),
 	     DEFAULT_MEDIA_TYPE,
 	     DEFAULT_MEDIA_CATEGORY_PLAYBACK,
@@ -1070,6 +1073,62 @@ static int setup_dsffile(struct data *data)
 
 	data->fill = dsf_play;
 
+	return 0;
+}
+
+struct format_info {
+	const char *name;
+	uint32_t spa_format;
+	uint32_t width;
+} format_info[] = {
+	{  "s8", SPA_AUDIO_FORMAT_S8, 1 },
+	{  "u8", SPA_AUDIO_FORMAT_U8, 1 },
+	{  "s16", SPA_AUDIO_FORMAT_S16, 2 },
+	{  "s24", SPA_AUDIO_FORMAT_S24, 3 },
+	{  "s32", SPA_AUDIO_FORMAT_S32, 4 },
+	{  "f32", SPA_AUDIO_FORMAT_F32, 4 },
+	{  "f64", SPA_AUDIO_FORMAT_F32, 8 },
+};
+
+static struct format_info *format_info_by_name(const char *str)
+{
+	uint32_t i;
+	for (i = 0; i < SPA_N_ELEMENTS(format_info); i++)
+		if (spa_streq(str, format_info[i].name))
+			return &format_info[i];
+	return NULL;
+}
+
+static int stdout_record(struct data *d, void *src, unsigned int n_frames)
+{
+	return fwrite(src, d->stride, n_frames, stdout);
+}
+
+static int stdin_play(struct data *d, void *src, unsigned int n_frames)
+{
+	return fread(src, d->stride, n_frames, stdin);
+}
+
+static int setup_pipe(struct data *data)
+{
+	struct format_info *info;
+
+	if (data->format == NULL)
+		data->format = DEFAULT_FORMAT;
+	if (data->channels == 0)
+		data->channels = DEFAULT_CHANNELS;
+	if (data->rate == 0)
+		data->rate = DEFAULT_RATE;
+	if (data->channelmap.n_channels == 0)
+		channelmap_default(&data->channelmap, data->channels);
+
+	info = format_info_by_name(data->format);
+	if (info == NULL)
+		return -EINVAL;
+
+	data->spa_format = info->spa_format;
+	data->stride = info->width * data->channels;
+	data->fill = data->mode == mode_playback ?  stdin_play : stdout_record;
 	return 0;
 }
 
@@ -1350,8 +1409,17 @@ int main(int argc, char *argv[])
 	/* negative means no volume adjustment */
 	data.volume = -1.0;
 	data.quality = -1;
+	data.props = pw_properties_new(
+			PW_KEY_APP_NAME, prog,
+			PW_KEY_NODE_NAME, prog,
+			NULL);
 
-	while ((c = getopt_long(argc, argv, "hvprmdR:q:", long_options, NULL)) != -1) {
+	if (data.props == NULL) {
+		fprintf(stderr, "error: pw_properties_new() failed: %m\n");
+		goto error_no_props;
+	}
+
+	while ((c = getopt_long(argc, argv, "hvprmdR:q:P:", long_options, NULL)) != -1) {
 
 		switch (c) {
 
@@ -1406,6 +1474,10 @@ int main(int argc, char *argv[])
 
 		case OPT_MEDIA_ROLE:
 			data.media_role = optarg;
+			break;
+
+		case 'P':
+			pw_properties_update_string(data.props, optarg, strlen(optarg));
 			break;
 
 		case OPT_TARGET:
@@ -1499,26 +1571,17 @@ int main(int argc, char *argv[])
 		data.volume = DEFAULT_VOLUME;
 
 	if (optind >= argc) {
-		fprintf(stderr, "error: filename argument missing\n");
+		fprintf(stderr, "error: filename or - argument missing\n");
 		goto error_usage;
 	}
 	data.filename = argv[optind++];
 
-	data.props = pw_properties_new(
-			PW_KEY_MEDIA_TYPE, data.media_type,
-			PW_KEY_MEDIA_CATEGORY, data.media_category,
-			PW_KEY_MEDIA_ROLE, data.media_role,
-			PW_KEY_APP_NAME, prog,
-			PW_KEY_MEDIA_FILENAME, data.filename,
-			PW_KEY_MEDIA_NAME, data.filename,
-			PW_KEY_NODE_NAME, prog,
-			PW_KEY_TARGET_OBJECT, data.target,
-			NULL);
-
-	if (data.props == NULL) {
-		fprintf(stderr, "error: pw_properties_new() failed: %m\n");
-		goto error_no_props;
-	}
+	pw_properties_set(data.props, PW_KEY_MEDIA_TYPE, data.media_type);
+	pw_properties_set(data.props, PW_KEY_MEDIA_CATEGORY, data.media_category);
+	pw_properties_set(data.props, PW_KEY_MEDIA_ROLE, data.media_role);
+	pw_properties_set(data.props, PW_KEY_MEDIA_FILENAME, data.filename);
+	pw_properties_set(data.props, PW_KEY_MEDIA_NAME, data.filename);
+	pw_properties_set(data.props, PW_KEY_TARGET_OBJECT, data.target);
 
 	/* make a main loop. If you already have another main loop, you can add
 	 * the fd of this pipewire mainloop to it. */
@@ -1553,19 +1616,23 @@ int main(int argc, char *argv[])
 	}
 	pw_core_add_listener(data.core, &data.core_listener, &core_events, &data);
 
-	switch (data.data_type) {
-	case TYPE_PCM:
-		ret = setup_sndfile(&data);
-		break;
-	case TYPE_MIDI:
-		ret = setup_midifile(&data);
-		break;
-	case TYPE_DSD:
-		ret = setup_dsffile(&data);
-		break;
-	default:
-		ret = -ENOTSUP;
-		break;
+	if (spa_streq(data.filename, "-")) {
+		ret = setup_pipe(&data);
+	} else {
+		switch (data.data_type) {
+		case TYPE_PCM:
+			ret = setup_sndfile(&data);
+			break;
+		case TYPE_MIDI:
+			ret = setup_midifile(&data);
+			break;
+		case TYPE_DSD:
+			ret = setup_dsffile(&data);
+			break;
+		default:
+			ret = -ENOTSUP;
+			break;
+		}
 	}
 
 	if (ret < 0) {

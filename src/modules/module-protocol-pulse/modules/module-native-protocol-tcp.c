@@ -74,56 +74,54 @@ static const struct spa_dict_item module_native_protocol_tcp_info[] = {
 	{ PW_KEY_MODULE_AUTHOR, "Wim Taymans <wim.taymans@gmail.com>" },
 	{ PW_KEY_MODULE_DESCRIPTION, "Native protocol (TCP sockets)" },
 	{ PW_KEY_MODULE_USAGE, "port=<TCP port number> "
-				"listen=<address to listen on>" },
+				"listen=<address to listen on> "
+				"auth-anonymous=<don't check for cookies?>"},
 	{ PW_KEY_MODULE_VERSION, PACKAGE_VERSION },
 };
 
-struct module *create_module_native_protocol_tcp(struct impl *impl, const char *argument)
+static int module_native_protocol_tcp_prepare(struct module * const module)
 {
-	struct module *module;
-	struct module_native_protocol_tcp_data *d;
-	struct pw_properties *props = NULL;
-	const char *port, *listen;
-	int res;
+	struct module_native_protocol_tcp_data * const d = module->user_data;
+	struct pw_properties * const props = module->props;
+	const char *port, *listen, *auth;
+	FILE *f;
+	char *args;
+	size_t size;
 
 	PW_LOG_TOPIC_INIT(mod_topic);
-
-	props = pw_properties_new_dict(&SPA_DICT_INIT_ARRAY(module_native_protocol_tcp_info));
-	if (props == NULL) {
-		res = -errno;
-		goto out;
-	}
-	if (argument)
-		module_args_add_props(props, argument);
 
 	if ((port = pw_properties_get(props, "port")) == NULL)
 		port = SPA_STRINGIFY(PW_PROTOCOL_PULSE_DEFAULT_PORT);
 
 	listen = pw_properties_get(props, "listen");
 
-	pw_properties_setf(props, "pulse.tcp", "[ \"tcp:%s%s%s\" ]",
+	auth = pw_properties_get(props, "auth-anonymous");
+
+	f = open_memstream(&args, &size);
+	if (f == NULL)
+		return -errno;
+
+	fprintf(f, "[ { ");
+	fprintf(f, " \"address\": \"tcp:%s%s%s\" ",
 			   listen ? listen : "", listen ? ":" : "", port);
+	if (auth && module_args_parse_bool(auth))
+		fprintf(f, " \"client.access\": \"unrestricted\" ");
+	fprintf(f, "} ]");
+	fclose(f);
 
-	module = module_new(impl, sizeof(*d));
-	if (module == NULL) {
-		res = -errno;
-		goto out;
-	}
+	pw_properties_set(props, "pulse.tcp", args);
+	free(args);
 
-	module->props = props;
-	d = module->user_data;
 	d->module = module;
 
-	return module;
-out:
-	pw_properties_free(props);
-	errno = -res;
-	return NULL;
+	return 0;
 }
 
 DEFINE_MODULE_INFO(module_native_protocol_tcp) = {
 	.name = "module-native-protocol-tcp",
-	.create = create_module_native_protocol_tcp,
+	.prepare = module_native_protocol_tcp_prepare,
 	.load = module_native_protocol_tcp_load,
 	.unload = module_native_protocol_tcp_unload,
+	.properties = &SPA_DICT_INIT_ARRAY(module_native_protocol_tcp_info),
+	.data_size = sizeof(struct module_native_protocol_tcp_data),
 };

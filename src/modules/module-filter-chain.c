@@ -288,11 +288,15 @@ PW_LOG_TOPIC_STATIC(mod_topic, "mod." NAME);
  * - \ref PW_KEY_NODE_GROUP
  * - \ref PW_KEY_NODE_LINK_GROUP
  * - \ref PW_KEY_NODE_VIRTUAL
+ * - \ref PW_KEY_NODE_NAME: See notes below. If not specified, defaults to
+ *   	'filter-chain-<pid>-<module-id>'.
  *
  * Stream only properties:
  *
  * - \ref PW_KEY_MEDIA_CLASS
- * - \ref PW_KEY_NODE_NAME
+ * - \ref PW_KEY_NODE_NAME:  if not given per stream, the global node.name will be
+ *         prefixed with 'input.' and 'output.' to generate a capture and playback
+ *         stream node.name respectively.
  *
  * ## Example configuration of a virtual source
  *
@@ -333,7 +337,7 @@ PW_LOG_TOPIC_STATIC(mod_topic, "mod." NAME);
  *
  * ## Example configuration of a Dolby Surround encoder virtual Sink
  *
- * This example uses the ladpsa surrounf encoder to encode a 5.1 signal
+ * This example uses the ladpsa surround encoder to encode a 5.1 signal
  * to a stereo Dolby Surround signal.
  *
  *\code{.unparsed}
@@ -585,7 +589,7 @@ static void capture_process(void *d)
 	struct impl *impl = d;
 	struct pw_buffer *in, *out;
 	struct graph *graph = &impl->graph;
-	uint32_t i, size = 0, n_hndl = graph->n_hndl;
+	uint32_t i, outsize = 0, n_hndl = graph->n_hndl;
 	int32_t stride = 0;
 
 	if ((in = pw_stream_dequeue_buffer(impl->capture)) == NULL)
@@ -600,10 +604,16 @@ static void capture_process(void *d)
 	for (i = 0; i < in->buffer->n_datas; i++) {
 		struct spa_data *ds = &in->buffer->datas[i];
 		struct graph_port *port = &graph->input[i];
+		uint32_t offs, size;
+
+		offs = SPA_MIN(ds->chunk->offset, ds->maxsize);
+		size = SPA_MIN(ds->chunk->size, ds->maxsize - offs);
+
 		if (port->desc)
 			port->desc->connect_port(port->hndl, port->port,
-				SPA_MEMBER(ds->data, ds->chunk->offset, void));
-		size = SPA_MAX(size, ds->chunk->size);
+				SPA_PTROFF(ds->data, offs, void));
+
+		outsize = SPA_MAX(outsize, size);
 		stride = SPA_MAX(stride, ds->chunk->stride);
 	}
 	for (i = 0; i < out->buffer->n_datas; i++) {
@@ -612,14 +622,14 @@ static void capture_process(void *d)
 		if (port->desc)
 			port->desc->connect_port(port->hndl, port->port, dd->data);
 		else
-			memset(dd->data, 0, size);
+			memset(dd->data, 0, outsize);
 		dd->chunk->offset = 0;
-		dd->chunk->size = size;
+		dd->chunk->size = outsize;
 		dd->chunk->stride = stride;
 	}
 	for (i = 0; i < n_hndl; i++) {
 		struct graph_hndl *hndl = &graph->hndl[i];
-		hndl->desc->run(hndl->hndl, size / sizeof(float));
+		hndl->desc->run(hndl->hndl, outsize / sizeof(float));
 	}
 
 done:
@@ -1298,8 +1308,10 @@ static int parse_config(struct node *node, struct spa_json *config)
 	if (spa_json_is_container(val, len))
 		len = spa_json_container_len(config, val, len);
 
-	if ((node->config = malloc(len+1)) != NULL)
-		spa_json_parse_stringn(val, len, node->config, len+1);
+	if ((node->config = malloc(len+1)) == NULL)
+		return -errno;
+
+	spa_json_parse_stringn(val, len, node->config, len+1);
 
 	return 0;
 }
@@ -1316,9 +1328,16 @@ static int parse_control(struct node *node, struct spa_json *control)
 
 	while (spa_json_get_string(control, key, sizeof(key)) > 0) {
 		float fl;
-		if (spa_json_get_float(control, &fl) <= 0)
+		const char *val;
+		int len;
+
+		if ((len = spa_json_next(control, &val)) < 0)
 			break;
-		set_control_value(node, key, &fl);
+
+		if (spa_json_parse_float(val, len, &fl) <= 0)
+			pw_log_warn("control '%s' expects a number, ignoring", key);
+		else
+			set_control_value(node, key, &fl);
 	}
 	return 0;
 }
@@ -1337,6 +1356,11 @@ static int parse_link(struct graph *graph, struct spa_json *json)
 	struct node *def_node;
 	struct port *in_port, *out_port;
 	struct link *link;
+
+	if (spa_list_is_empty(&graph->node_list)) {
+		pw_log_error("can't make links in graph without nodes");
+		return -EINVAL;
+	}
 
 	while (spa_json_get_string(json, key, sizeof(key)) > 0) {
 		if (spa_streq(key, "output")) {
@@ -1430,6 +1454,7 @@ static int load_node(struct graph *graph, struct spa_json *json)
 	bool have_control = false;
 	bool have_config = false;
 	uint32_t i;
+	int res;
 
 	while (spa_json_get_string(json, key, sizeof(key)) > 0) {
 		if (spa_streq("type", key)) {
@@ -1524,7 +1549,8 @@ static int load_node(struct graph *graph, struct spa_json *json)
 		spa_list_init(&port->link_list);
 	}
 	if (have_config)
-		parse_config(node, &config);
+		if ((res = parse_config(node, &config)) < 0)
+			pw_log_warn("error parsing config: %s", spa_strerror(res));
 	if (have_control)
 		parse_control(node, &control);
 
@@ -1661,7 +1687,7 @@ static int setup_graph(struct graph *graph, struct spa_json *inputs, struct spa_
 		impl->playback_info.channels = n_output;
 
 	/* compare to the requested number of channels and duplicate the
-	 * graph m_hndl times when needed. */
+	 * graph n_hndl times when needed. */
 	n_hndl = impl->capture_info.channels / n_input;
 	if (n_hndl != impl->playback_info.channels / n_output) {
 		pw_log_error("invalid channels");
@@ -1888,8 +1914,9 @@ error:
  */
 static int load_graph(struct graph *graph, struct pw_properties *props)
 {
-	struct spa_json it[4];
+	struct spa_json it[3];
 	struct spa_json inputs, outputs, *pinputs = NULL, *poutputs = NULL;
+	struct spa_json nodes, *pnodes = NULL, links, *plinks = NULL;
 	const char *json, *val;
 	char key[256];
 	int res;
@@ -1910,35 +1937,48 @@ static int load_graph(struct graph *graph, struct pw_properties *props)
 
 	while (spa_json_get_string(&it[1], key, sizeof(key)) > 0) {
 		if (spa_streq("nodes", key)) {
-			if (spa_json_enter_array(&it[1], &it[2]) <= 0) {
-				pw_log_error("nodes expect an array");
+			if (spa_json_enter_array(&it[1], &nodes) <= 0) {
+				pw_log_error("nodes expects an array");
 				return -EINVAL;
 			}
-			while (spa_json_enter_object(&it[2], &it[3]) > 0) {
-				if ((res = load_node(graph, &it[3])) < 0)
-					return res;
-			}
+			pnodes = &nodes;
 		}
 		else if (spa_streq("links", key)) {
-			if (spa_json_enter_array(&it[1], &it[2]) <= 0)
+			if (spa_json_enter_array(&it[1], &links) <= 0) {
+				pw_log_error("links expects an array");
 				return -EINVAL;
-
-			while (spa_json_enter_object(&it[2], &it[3]) > 0) {
-				if ((res = parse_link(graph, &it[3])) < 0)
-					return res;
 			}
+			plinks = &links;
 		}
 		else if (spa_streq("inputs", key)) {
-			if (spa_json_enter_array(&it[1], &inputs) <= 0)
+			if (spa_json_enter_array(&it[1], &inputs) <= 0) {
+				pw_log_error("inputs expects an array");
 				return -EINVAL;
+			}
 			pinputs = &inputs;
 		}
 		else if (spa_streq("outputs", key)) {
-			if (spa_json_enter_array(&it[1], &outputs) <= 0)
+			if (spa_json_enter_array(&it[1], &outputs) <= 0) {
+				pw_log_error("outputs expects an array");
 				return -EINVAL;
+			}
 			poutputs = &outputs;
 		} else if (spa_json_next(&it[1], &val) < 0)
 			break;
+	}
+	if (pnodes == NULL) {
+		pw_log_error("filter.graph is missing a nodes array");
+		return -EINVAL;
+	}
+	while (spa_json_enter_object(pnodes, &it[2]) > 0) {
+		if ((res = load_node(graph, &it[2])) < 0)
+			return res;
+	}
+	if (plinks != NULL) {
+		while (spa_json_enter_object(plinks, &it[2]) > 0) {
+			if ((res = parse_link(graph, &it[2])) < 0)
+				return res;
+		}
 	}
 	return setup_graph(graph, pinputs, poutputs);
 }
@@ -2043,10 +2083,8 @@ static void parse_audio_info(struct pw_properties *props, struct spa_audio_info_
 
 	*info = SPA_AUDIO_INFO_RAW_INIT(
 			.format = SPA_AUDIO_FORMAT_F32P);
-	if ((str = pw_properties_get(props, PW_KEY_AUDIO_RATE)) != NULL)
-		info->rate = atoi(str);
-	if ((str = pw_properties_get(props, PW_KEY_AUDIO_CHANNELS)) != NULL)
-		info->channels = atoi(str);
+	info->rate = pw_properties_get_int32(props, PW_KEY_AUDIO_RATE, 0);
+	info->channels = pw_properties_get_int32(props, PW_KEY_AUDIO_CHANNELS, 0);
 	if ((str = pw_properties_get(props, SPA_KEY_AUDIO_POSITION)) != NULL)
 		parse_position(info, str, strlen(str));
 }
@@ -2134,12 +2172,17 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	parse_audio_info(impl->capture_props, &impl->capture_info);
 	parse_audio_info(impl->playback_props, &impl->playback_info);
 
+	if ((str = pw_properties_get(props, PW_KEY_NODE_NAME)) == NULL) {
+		pw_properties_setf(props, PW_KEY_NODE_NAME,
+				"filter-chain-%u-%u", pid, id);
+		str = pw_properties_get(props, PW_KEY_NODE_NAME);
+	}
 	if (pw_properties_get(impl->capture_props, PW_KEY_NODE_NAME) == NULL)
 		pw_properties_setf(impl->capture_props, PW_KEY_NODE_NAME,
-				"input.filter-chain-%u-%u", pid, id);
+				"input.%s", str);
 	if (pw_properties_get(impl->playback_props, PW_KEY_NODE_NAME) == NULL)
 		pw_properties_setf(impl->playback_props, PW_KEY_NODE_NAME,
-				"output.filter-chain-%u-%u", pid, id);
+				"output.%s", str);
 
 	if (pw_properties_get(impl->capture_props, PW_KEY_MEDIA_NAME) == NULL)
 		pw_properties_setf(impl->capture_props, PW_KEY_MEDIA_NAME, "%s input",
