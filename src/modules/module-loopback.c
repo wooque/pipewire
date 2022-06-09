@@ -72,11 +72,15 @@
  * - \ref PW_KEY_NODE_GROUP
  * - \ref PW_KEY_NODE_LINK_GROUP
  * - \ref PW_KEY_NODE_VIRTUAL
+ * - \ref PW_KEY_NODE_NAME: See notes below. If not specified, defaults to
+ *   	'loopback-<pid>-<module-id>'.
  *
  * Stream only properties:
  *
  * - \ref PW_KEY_MEDIA_CLASS
- * - \ref PW_KEY_NODE_NAME
+ * - \ref PW_KEY_NODE_NAME:  if not given per stream, the global node.name will be
+ *         prefixed with 'input.' and 'output.' to generate a capture and playback
+ *         stream node.name respectively.
  *
  * ## Example configuration of a virtual sink
  *
@@ -184,28 +188,32 @@ static void capture_process(void *d)
 		pw_log_debug("out of playback buffers: %m");
 
 	if (in != NULL && out != NULL) {
-		uint32_t size = 0;
-		int32_t stride = 0;
 
 		for (i = 0; i < out->buffer->n_datas; i++) {
 			struct spa_data *ds, *dd;
+			uint32_t outsize = 0;
+			int32_t stride = 0;
 
 			dd = &out->buffer->datas[i];
 
 			if (i < in->buffer->n_datas) {
+				uint32_t offs, size;
+
 				ds = &in->buffer->datas[i];
 
-				memcpy(dd->data,
-					SPA_PTROFF(ds->data, ds->chunk->offset, void),
-					ds->chunk->size);
+				offs = SPA_MIN(ds->chunk->offset, ds->maxsize);
+				size = SPA_MIN(ds->chunk->size, ds->maxsize - offs);
+				stride = SPA_MAX(stride, stride);
 
-				size = SPA_MAX(size, ds->chunk->size);
-				stride = SPA_MAX(stride, ds->chunk->stride);
+				memcpy(dd->data,
+					SPA_PTROFF(ds->data, offs, void), size);
+
+				outsize = SPA_MAX(outsize, size);
 			} else {
-				memset(dd->data, 0, size);
+				memset(dd->data, 0, outsize);
 			}
 			dd->chunk->offset = 0;
-			dd->chunk->size = size;
+			dd->chunk->size = outsize;
 			dd->chunk->stride = stride;
 		}
 	}
@@ -526,12 +534,17 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	copy_props(impl, props, PW_KEY_NODE_VIRTUAL);
 	copy_props(impl, props, PW_KEY_MEDIA_NAME);
 
+	if ((str = pw_properties_get(props, PW_KEY_NODE_NAME)) == NULL) {
+		pw_properties_setf(props, PW_KEY_NODE_NAME,
+				"loopback-%u-%u", pid, id);
+		str = pw_properties_get(props, PW_KEY_NODE_NAME);
+	}
 	if (pw_properties_get(impl->capture_props, PW_KEY_NODE_NAME) == NULL)
 		pw_properties_setf(impl->capture_props, PW_KEY_NODE_NAME,
-				"input.loopback-%u-%u", pid, id);
+				"input.%s", str);
 	if (pw_properties_get(impl->playback_props, PW_KEY_NODE_NAME) == NULL)
 		pw_properties_setf(impl->playback_props, PW_KEY_NODE_NAME,
-				"output.loopback-%u-%u", pid, id);
+				"output.%s", str);
 
 	parse_audio_info(impl->capture_props, &impl->capture_info);
 	parse_audio_info(impl->playback_props, &impl->playback_info);

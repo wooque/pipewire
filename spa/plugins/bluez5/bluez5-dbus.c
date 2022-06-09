@@ -50,6 +50,7 @@
 #include <spa/utils/string.h>
 #include <spa/utils/json.h>
 
+#include "config.h"
 #include "codec-loader.h"
 #include "player.h"
 #include "defs.h"
@@ -819,6 +820,29 @@ static void adapter_free(struct spa_bt_adapter *adapter)
 	free(adapter);
 }
 
+static uint32_t adapter_connectable_profiles(struct spa_bt_adapter *adapter)
+{
+	const uint32_t profiles = adapter->profiles;
+	uint32_t mask = 0;
+
+	if (profiles & SPA_BT_PROFILE_A2DP_SINK)
+		mask |= SPA_BT_PROFILE_A2DP_SOURCE;
+	if (profiles & SPA_BT_PROFILE_A2DP_SOURCE)
+		mask |= SPA_BT_PROFILE_A2DP_SINK;
+
+	if (profiles & SPA_BT_PROFILE_HSP_AG)
+		mask |= SPA_BT_PROFILE_HSP_HS;
+	if (profiles & SPA_BT_PROFILE_HSP_HS)
+		mask |= SPA_BT_PROFILE_HSP_AG;
+
+	if (profiles & SPA_BT_PROFILE_HFP_AG)
+		mask |= SPA_BT_PROFILE_HFP_HF;
+	if (profiles & SPA_BT_PROFILE_HFP_HF)
+		mask |= SPA_BT_PROFILE_HFP_AG;
+
+	return mask;
+}
+
 struct spa_bt_device *spa_bt_device_find(struct spa_bt_monitor *monitor, const char *path)
 {
 	struct spa_bt_device *d;
@@ -1144,6 +1168,10 @@ static int reconnect_device_profiles(struct spa_bt_device *device)
 		}
 	}
 
+	/* Connect only profiles the adapter has a counterpart for */
+	if (device->adapter)
+		reconnect &= adapter_connectable_profiles(device->adapter);
+
 	if (!(device->connected_profiles & SPA_BT_PROFILE_HEADSET_HEAD_UNIT)) {
 		if (reconnect & SPA_BT_PROFILE_HFP_HF) {
 			SPA_FLAG_CLEAR(reconnect, SPA_BT_PROFILE_HSP_HS);
@@ -1257,9 +1285,12 @@ int spa_bt_device_check_profiles(struct spa_bt_device *device, bool force)
 {
 	struct spa_bt_monitor *monitor = device->monitor;
 	uint32_t connected_profiles = device->connected_profiles;
-	uint32_t direction_masks[2] = {
-		SPA_BT_PROFILE_A2DP_SINK | SPA_BT_PROFILE_HEADSET_AUDIO,
-		SPA_BT_PROFILE_A2DP_SOURCE | SPA_BT_PROFILE_HEADSET_AUDIO_GATEWAY,
+	uint32_t connectable_profiles =
+		device->adapter ? adapter_connectable_profiles(device->adapter) : 0;
+	uint32_t direction_masks[3] = {
+		SPA_BT_PROFILE_A2DP_SINK | SPA_BT_PROFILE_HEADSET_HEAD_UNIT,
+		SPA_BT_PROFILE_A2DP_SOURCE,
+		SPA_BT_PROFILE_HEADSET_AUDIO_GATEWAY,
 	};
 	bool direction_connected = false;
 	bool all_connected;
@@ -1271,15 +1302,16 @@ int spa_bt_device_check_profiles(struct spa_bt_device *device, bool force)
 		connected_profiles |= SPA_BT_PROFILE_HEADSET_AUDIO_GATEWAY;
 
 	for (i = 0; i < SPA_N_ELEMENTS(direction_masks); ++i) {
-		uint32_t mask = direction_masks[i] & device->profiles;
+		uint32_t mask = direction_masks[i] & device->profiles & connectable_profiles;
 		if (mask && (connected_profiles & mask) == mask)
 			direction_connected = true;
 	}
 
 	all_connected = (device->profiles & connected_profiles) == device->profiles;
 
-	spa_log_debug(monitor->log, "device %p: profiles %08x %08x %d",
-			device, device->profiles, connected_profiles, device->added);
+	spa_log_debug(monitor->log, "device %p: profiles %08x %08x connectable:%08x added:%d all:%d dir:%d",
+			device, device->profiles, connected_profiles, connectable_profiles,
+			device->added, all_connected, direction_connected);
 
 	if (connected_profiles == 0 && spa_list_is_empty(&device->codec_switch_list)) {
 		device_stop_timer(device);
@@ -1579,7 +1611,11 @@ const struct a2dp_codec **spa_bt_device_get_supported_a2dp_codecs(struct spa_bt_
 		if (j >= size) {
 			const struct a2dp_codec **p;
 			size = size * 2;
+#ifdef HAVE_REALLOCARRRAY
 			p = reallocarray(supported_codecs, size, sizeof(const struct a2dp_codec *));
+#else
+			p = realloc(supported_codecs, size * sizeof(const struct a2dp_codec *));
+#endif
 			if (p == NULL) {
 				free(supported_codecs);
 				return NULL;
@@ -1862,6 +1898,7 @@ void spa_bt_transport_free(struct spa_bt_transport *transport)
 	if (device && device->connected_profiles != prev_connected)
 		spa_bt_device_emit_profiles_changed(device, device->profiles, prev_connected);
 
+	free(transport->endpoint_path);
 	free(transport->path);
 	free(transport);
 }
@@ -2525,6 +2562,7 @@ static void a2dp_codec_switch_next(struct spa_bt_a2dp_codec_switch *sw)
 static bool a2dp_codec_switch_process_current(struct spa_bt_a2dp_codec_switch *sw)
 {
 	struct spa_bt_remote_endpoint *ep;
+	struct spa_bt_transport *t;
 	const struct a2dp_codec *codec;
 	uint8_t config[A2DP_MAX_CAPS_SIZE];
 	char *local_endpoint_base;
@@ -2577,6 +2615,19 @@ static bool a2dp_codec_switch_process_current(struct spa_bt_a2dp_codec_switch *s
 		spa_log_debug(sw->device->monitor->log, "a2dp codec switch %p: no endpoint for codec %s, try next",
 		              sw, codec->name);
 		goto next;
+	}
+
+	/* Each endpoint can be used by only one device at a time (on each adapter) */
+	spa_list_for_each(t, &sw->device->monitor->transport_list, link) {
+		if (t->device == sw->device)
+			continue;
+		if (t->device->adapter != sw->device->adapter)
+			continue;
+		if (spa_streq(t->endpoint_path, local_endpoint)) {
+			spa_log_debug(sw->device->monitor->log, "a2dp codec switch %p: endpoint %s in use, try next",
+					sw, local_endpoint);
+			goto next;
+		}
 	}
 
 	res = codec->select_config(codec, 0, ep->capabilities, ep->capabilities_len,
@@ -3026,6 +3077,8 @@ static DBusHandlerResult endpoint_set_configuration(DBusConnection *conn,
 		transport->volumes[i].hw_volume_max = SPA_BT_VOLUME_A2DP_MAX;
 	}
 
+	free(transport->endpoint_path);
+	transport->endpoint_path = strdup(endpoint);
 	transport->profile = profile;
 	transport->a2dp_codec = codec;
 	transport_update_props(transport, &it[1], NULL);
@@ -3531,8 +3584,10 @@ static int register_media_application(struct spa_bt_monitor * monitor)
 		if (!is_a2dp_codec_enabled(monitor, codec))
 			continue;
 
-		register_a2dp_endpoint(monitor, codec, A2DP_SOURCE_ENDPOINT);
-		register_a2dp_endpoint(monitor, codec, A2DP_SINK_ENDPOINT);
+		if (codec->encode != NULL)
+			register_a2dp_endpoint(monitor, codec, A2DP_SOURCE_ENDPOINT);
+		if (codec->decode != NULL)
+			register_a2dp_endpoint(monitor, codec, A2DP_SINK_ENDPOINT);
 	}
 
 	return 0;
@@ -4517,7 +4572,7 @@ impl_init(const struct spa_handle_factory *factory,
 		if ((str = spa_dict_lookup(info, "bluez5.dummy-avrcp-player")) != NULL)
 			this->dummy_avrcp_player = spa_atob(str);
 		else
-			this->dummy_avrcp_player = true;
+			this->dummy_avrcp_player = false;
 	}
 
 	register_media_application(this);

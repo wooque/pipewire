@@ -151,6 +151,7 @@ struct state {
 	int rate;
 	int channels;
 	size_t frame_size;
+	size_t frame_scale;
 	int blocks;
 	uint32_t rate_denom;
 	uint32_t delay;
@@ -191,6 +192,7 @@ struct state {
 	uint32_t duration;
 	unsigned int alsa_started:1;
 	unsigned int alsa_sync:1;
+	unsigned int alsa_sync_warning:1;
 	unsigned int alsa_recovering:1;
 	unsigned int following:1;
 	unsigned int matching:1;

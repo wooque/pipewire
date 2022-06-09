@@ -99,15 +99,15 @@ PW_LOG_TOPIC_STATIC(mod_topic, "mod." NAME);
 
 #define DEFAULT_FORMAT "S16"
 #define DEFAULT_RATE 48000
-#define DEFAULT_CHANNELS "2"
+#define DEFAULT_CHANNELS 2
 #define DEFAULT_POSITION "[ FL FR ]"
 
 #define MODULE_USAGE	"[ node.latency=<latency as fraction> ] "				\
 			"[ node.name=<name of the nodes> ] "					\
 			"[ node.description=<description of the nodes> ] "			\
 			"[ audio.format=<format, default:"DEFAULT_FORMAT"> ] "			\
-			"[ audio.rate=<sample rate, default: 48000> ] "				\
-			"[ audio.channels=<number of channels, default:"DEFAULT_CHANNELS"> ] "	\
+			"[ audio.rate=<sample rate, default: "SPA_STRINGIFY(DEFAULT_RATE)"> ] "			\
+			"[ audio.channels=<number of channels, default:"SPA_STRINGIFY(EFAULT_CHANNELS) "> ] "	\
 			"[ audio.position=<channel map, default:"DEFAULT_POSITION"> ] "		\
 			"[ stream.props=<properties> ] "
 
@@ -187,7 +187,7 @@ static void playback_stream_process(void *d)
 	struct pw_buffer *buf;
 	struct spa_data *bd;
 	void *data;
-	uint32_t size;
+	uint32_t offs, size;
 
 	if ((buf = pw_stream_dequeue_buffer(impl->stream)) == NULL) {
 		pw_log_debug("out of buffers: %m");
@@ -195,8 +195,10 @@ static void playback_stream_process(void *d)
 	}
 
 	bd = &buf->buffer->datas[0];
-	data = SPA_PTROFF(bd->data, bd->chunk->offset, void);
-	size = bd->chunk->size;
+
+	offs = SPA_MIN(bd->chunk->offset, bd->maxsize);
+	size = SPA_MIN(bd->chunk->size, bd->maxsize - offs);
+	data = SPA_PTROFF(bd->data, offs, void);
 
 	/* write buffer contents here */
 	pw_log_info("got buffer of size %d and data %p", size, data);
@@ -377,9 +379,7 @@ static int parse_audio_info(struct impl *impl)
 		pw_log_error("invalid rate '%s'", str);
 		return -EINVAL;
 	}
-	if ((str = pw_properties_get(props, PW_KEY_AUDIO_CHANNELS)) == NULL)
-		str = DEFAULT_CHANNELS;
-	info->channels = atoi(str);
+	info->channels = pw_properties_get_uint32(props, PW_KEY_AUDIO_CHANNELS, DEFAULT_CHANNELS);
 	if ((str = pw_properties_get(props, SPA_KEY_AUDIO_POSITION)) == NULL)
 		str = DEFAULT_POSITION;
 	parse_position(info, str, strlen(str));

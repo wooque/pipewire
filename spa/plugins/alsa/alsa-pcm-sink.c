@@ -353,7 +353,9 @@ static int impl_node_set_param(void *object, uint32_t id, uint32_t flags,
 	case SPA_PARAM_ProcessLatency:
 	{
 		struct spa_process_latency_info info;
-		if ((res = spa_process_latency_parse(param, &info)) < 0)
+		if (param == NULL)
+			spa_zero(info);
+		else if ((res = spa_process_latency_parse(param, &info)) < 0)
 			return res;
 
 		handle_process_latency(this, &info);
@@ -531,8 +533,8 @@ impl_node_port_enum_params(void *object, int seq,
 			SPA_PARAM_BUFFERS_buffers, SPA_POD_CHOICE_RANGE_Int(2, 1, MAX_BUFFERS),
 			SPA_PARAM_BUFFERS_blocks,  SPA_POD_Int(this->blocks),
 			SPA_PARAM_BUFFERS_size,    SPA_POD_CHOICE_RANGE_Int(
-							this->quantum_limit * this->frame_size,
-							16 * this->frame_size,
+							this->quantum_limit * this->frame_size * this->frame_scale,
+							16 * this->frame_size * this->frame_scale,
 							INT32_MAX),
 			SPA_PARAM_BUFFERS_stride,  SPA_POD_Int(this->frame_size));
 		break;
@@ -694,7 +696,9 @@ impl_node_port_set_param(void *object,
 	case SPA_PARAM_Latency:
 	{
 		struct spa_latency_info info;
-		if ((res = spa_latency_parse(param, &info)) < 0)
+		if (param == NULL)
+			info = SPA_LATENCY_INFO(SPA_DIRECTION_REVERSE(direction));
+		else if ((res = spa_latency_parse(param, &info)) < 0)
 			return res;
 		if (direction == info.direction)
 			return -EINVAL;
