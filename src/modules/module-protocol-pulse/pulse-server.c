@@ -87,9 +87,6 @@
 #define DEFAULT_POSITION	"[ FL FR ]"
 
 #define MAX_FORMATS	32
-/* The max amount of data we send in one block when capturing. In PulseAudio this
- * size is derived from the mempool PA_MEMPOOL_SLOT_SIZE */
-#define MAX_FRAGSIZE	(64*1024)
 
 #define TEMPORARY_MOVE_TIMEOUT	(SPA_NSEC_PER_SEC)
 
@@ -455,6 +452,10 @@ static uint32_t fix_playback_buffer_attr(struct stream *s, struct buffer_attr *a
 	if (frame_size == 0)
 		frame_size = 4;
 
+	pw_log_info("[%s] maxlength:%u tlength:%u minreq:%u prebuf:%u",
+			s->client->name, attr->maxlength, attr->tlength,
+			attr->minreq, attr->prebuf);
+
 	minreq = frac_to_bytes_round_up(s->min_req, &s->ss);
 	max_latency = defs->quantum_limit * frame_size;
 
@@ -651,6 +652,9 @@ static uint32_t fix_record_buffer_attr(struct stream *s, struct buffer_attr *att
 	if (frame_size == 0)
 		frame_size = 4;
 
+	pw_log_info("[%s] maxlength:%u fragsize:%u",
+			s->client->name, attr->maxlength, attr->fragsize);
+
 	if (attr->maxlength == (uint32_t) -1 || attr->maxlength > MAXLENGTH)
 		attr->maxlength = MAXLENGTH;
 	attr->maxlength -= attr->maxlength % frame_size;
@@ -660,12 +664,9 @@ static uint32_t fix_record_buffer_attr(struct stream *s, struct buffer_attr *att
 
 	if (attr->fragsize == (uint32_t) -1 || attr->fragsize == 0)
 		attr->fragsize = frac_to_bytes_round_up(s->default_frag, &s->ss);
-	attr->fragsize -= attr->fragsize % frame_size;
+	attr->fragsize = SPA_MIN(attr->fragsize, attr->maxlength);
+	attr->fragsize = SPA_ROUND_UP(attr->fragsize, frame_size);
 	attr->fragsize = SPA_MAX(attr->fragsize, minfrag);
-	attr->fragsize = SPA_MAX(attr->fragsize, frame_size);
-
-	if (attr->fragsize > attr->maxlength)
-		attr->fragsize = attr->maxlength;
 
 	attr->tlength = attr->minreq = attr->prebuf = 0;
 
@@ -676,6 +677,9 @@ static uint32_t fix_record_buffer_attr(struct stream *s, struct buffer_attr *att
 	} else {
 		latency = attr->fragsize;
 	}
+	/* make sure can queue at least to fragsize without overruns */
+	if (attr->maxlength < attr->fragsize * 2)
+		attr->maxlength = attr->fragsize * 2;
 
 	pw_log_info("[%s] maxlength:%u fragsize:%u minfrag:%u latency:%u",
 			s->client->name, attr->maxlength, attr->fragsize, minfrag,
@@ -748,13 +752,12 @@ static int reply_create_record_stream(struct stream *stream, struct pw_manager_o
 		peer = find_linked(manager, peer->id, PW_DIRECTION_OUTPUT);
 	if (peer && pw_manager_object_is_source_or_monitor(peer)) {
 		name = pw_properties_get(peer->props, PW_KEY_NODE_NAME);
+		peer_index = peer->index;
 		if (!pw_manager_object_is_source(peer)) {
 			size_t len = (name ? strlen(name) : 5) + 10;
-			peer_index = peer->index;
 			peer_name = tmp = alloca(len);
 			snprintf(tmp, len, "%s.monitor", name ? name : "sink");
 		} else {
-			peer_index = peer->index;
 			peer_name = name;
 		}
 	} else {
@@ -849,6 +852,13 @@ static void manager_added(void *data, struct pw_manager_object *o)
 			s->peer_index = peer->index;
 
 			peer_name = pw_properties_get(peer->props, PW_KEY_NODE_NAME);
+			if (peer_name && s->direction == PW_DIRECTION_INPUT &&
+			    pw_manager_object_is_monitor(peer)) {
+				int len = strlen(peer_name) + 10;
+				char *tmp = alloca(len);
+				snprintf(tmp, len, "%s.monitor", peer_name);
+				peer_name = tmp;
+			}
 			if (peer_name != NULL)
 				stream_send_moved(s, peer->index, peer_name);
 		}
@@ -1024,11 +1034,11 @@ static int do_set_client_name(struct client *client, uint32_t command, uint32_t 
 		changed++;
 	}
 
+	client_update_quirks(client);
+
 	client->name = pw_properties_get(client->props, PW_KEY_APP_NAME);
 	pw_log_info("[%s] %s tag:%d", client->name,
 			commands[command].name, tag);
-
-	client_update_quirks(client);
 
 	if (client->core == NULL) {
 		client->core = pw_context_connect(impl->context,
@@ -1320,8 +1330,7 @@ do_process_done(struct spa_loop *loop,
 			}
 
 			while ((uint32_t)avail >= stream->attr.fragsize) {
-				towrite = SPA_MIN(avail, MAX_FRAGSIZE);
-				towrite = SPA_ROUND_DOWN(towrite, stream->frame_size);
+				towrite = SPA_MIN((uint32_t)avail, stream->attr.fragsize);
 
 				msg = message_alloc(impl, stream->channel, towrite);
 				if (msg == NULL)
@@ -3236,6 +3245,7 @@ static int do_update_proplist(struct client *client, uint32_t command, uint32_t 
 	} else {
 		if (pw_properties_update(client->props, &props->dict) > 0) {
 			client_update_quirks(client);
+			client->name = pw_properties_get(client->props, PW_KEY_APP_NAME);
 			pw_core_update_properties(client->core, &client->props->dict);
 		}
 	}
@@ -4313,7 +4323,7 @@ error_invalid:
 	goto error;
 error:
 	if (reply)
-		message_free(impl, reply, false, false);
+		message_free(reply, false, false);
 	return res;
 }
 
@@ -4389,7 +4399,7 @@ static int do_get_sample_info(struct client *client, uint32_t command, uint32_t 
 
 error:
 	if (reply)
-		message_free(impl, reply, false, false);
+		message_free(reply, false, false);
 	return res;
 }
 
@@ -5353,7 +5363,7 @@ static void impl_clear(struct impl *impl)
 		client_free(c);
 
 	spa_list_consume(msg, &impl->free_messages, link)
-		message_free(impl, msg, true, true);
+		message_free(msg, true, true);
 
 	pw_map_for_each(&impl->samples, impl_free_sample, impl);
 	pw_map_clear(&impl->samples);

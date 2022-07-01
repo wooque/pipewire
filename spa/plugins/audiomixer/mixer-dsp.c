@@ -105,6 +105,7 @@ struct impl {
 	uint32_t cpu_flags;
 	uint32_t max_align;
 
+	struct spa_io_position *io_position;
 	uint32_t quantum_limit;
 
 	struct mix_ops ops;
@@ -152,7 +153,20 @@ static int impl_node_set_param(void *object, uint32_t id, uint32_t flags,
 
 static int impl_node_set_io(void *object, uint32_t id, void *data, size_t size)
 {
-	return -ENOTSUP;
+	struct impl *this = object;
+
+	spa_return_val_if_fail(this != NULL, -EINVAL);
+
+	spa_log_debug(this->log, "%p: io %d %p/%zd", this, id, data, size);
+
+	switch (id) {
+	case SPA_IO_Position:
+		this->io_position = data;
+		break;
+	default:
+		return -ENOENT;
+	}
+	return 0;
 }
 
 static int impl_node_send_command(void *object, const struct spa_command *command)
@@ -694,7 +708,10 @@ static int impl_node_process(void *object)
 	datas = alloca(MAX_PORTS * sizeof(void *));
 	n_buffers = 0;
 
-	maxsize = UINT32_MAX;
+	if (SPA_LIKELY(this->io_position))
+		maxsize = this->io_position->clock.duration * sizeof(float);
+	else
+		maxsize = this->quantum_limit;
 
 	for (i = 0; i < this->last_port; i++) {
 		struct port *inport = GET_IN_PORT(this, i);
@@ -727,8 +744,10 @@ static int impl_node_process(void *object)
 				i, inio, outio, inio->status, inio->buffer_id,
 				offs, size);
 
-		datas[n_buffers] = SPA_PTROFF(bd->data, offs, void);
-		buffers[n_buffers++] = inb;
+		if (!SPA_FLAG_IS_SET(bd->chunk->flags, SPA_CHUNK_FLAG_EMPTY)) {
+			datas[n_buffers] = SPA_PTROFF(bd->data, offs, void);
+			buffers[n_buffers++] = inb;
+		}
 		inio->status = SPA_STATUS_NEED_DATA;
 	}
 
@@ -742,6 +761,7 @@ static int impl_node_process(void *object)
 		*outb->buffer = *buffers[0]->buffer;
 	} else {
 		struct spa_data *d = outb->buf.datas;
+
 		*outb->buffer = outb->buf;
 
 		maxsize = SPA_MIN(maxsize, d[0].maxsize);
@@ -749,6 +769,7 @@ static int impl_node_process(void *object)
 		d[0].chunk->offset = 0;
 		d[0].chunk->size = maxsize;
 		d[0].chunk->stride = sizeof(float);
+		SPA_FLAG_UPDATE(d[0].chunk->flags, SPA_CHUNK_FLAG_EMPTY, n_buffers == 0);
 
 		spa_log_trace_fp(this->log, "%p: %d mix %d", this, n_buffers, maxsize);
 
@@ -846,6 +867,7 @@ impl_init(const struct spa_handle_factory *factory,
 		this->max_align = SPA_MIN(MAX_ALIGN, spa_cpu_get_max_align(this->cpu));
 	}
 
+	this->quantum_limit = 8192;
 	for (i = 0; info && i < info->n_items; i++) {
 		const char *k = info->items[i].key;
 		const char *s = info->items[i].value;
