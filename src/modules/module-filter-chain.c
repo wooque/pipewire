@@ -1690,14 +1690,28 @@ static int setup_graph(struct graph *graph, struct spa_json *inputs, struct spa_
 	 * graph n_hndl times when needed. */
 	n_hndl = impl->capture_info.channels / n_input;
 	if (n_hndl != impl->playback_info.channels / n_output) {
-		pw_log_error("invalid channels");
+		pw_log_error("invalid channels. The capture stream has %1$d channels and "
+				"the filter has %2$d inputs. The playback stream has %3$d channels "
+				"and the filter has %4$d outputs. capture:%1$d / input:%2$d != "
+				"playback:%3$d / output:%4$d. Check inputs and outputs objects.",
+				impl->capture_info.channels, n_input,
+				impl->playback_info.channels, n_output);
 		res = -EINVAL;
 		goto error;
 	}
 	if (n_hndl > MAX_HNDL) {
-		pw_log_error("too many channels");
+		pw_log_error("too many channels. %d > %d", n_hndl, MAX_HNDL);
 		res = -EINVAL;
 		goto error;
+	}
+	if (n_hndl == 0) {
+		n_hndl = 1;
+		pw_log_warn("The capture stream has %1$d channels and "
+				"the filter has %2$d inputs. The playback stream has %3$d channels "
+				"and the filter has %4$d outputs. Some filter ports will be "
+				"unconnected..",
+				impl->capture_info.channels, n_input,
+				impl->playback_info.channels, n_output);
 	}
 	pw_log_info("using %d instances %d %d", n_hndl, n_input, n_output);
 
@@ -2083,8 +2097,9 @@ static void parse_audio_info(struct pw_properties *props, struct spa_audio_info_
 
 	*info = SPA_AUDIO_INFO_RAW_INIT(
 			.format = SPA_AUDIO_FORMAT_F32P);
-	info->rate = pw_properties_get_int32(props, PW_KEY_AUDIO_RATE, 0);
-	info->channels = pw_properties_get_int32(props, PW_KEY_AUDIO_CHANNELS, 0);
+	info->rate = pw_properties_get_int32(props, PW_KEY_AUDIO_RATE, info->rate);
+	info->channels = pw_properties_get_int32(props, PW_KEY_AUDIO_CHANNELS, info->channels);
+	info->channels = SPA_MIN(info->channels, SPA_AUDIO_MAX_CHANNELS);
 	if ((str = pw_properties_get(props, SPA_KEY_AUDIO_POSITION)) != NULL)
 		parse_position(info, str, strlen(str));
 }

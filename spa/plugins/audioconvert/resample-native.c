@@ -58,14 +58,23 @@ static inline double sinc(double x)
 	return sin(x) / x;
 }
 
-static inline double blackman(double x, double n_taps)
+#if 0
+static inline double window_blackman(double x, double n_taps)
 {
 	double alpha = 0.232;
 	x =  2.0 * M_PI * x / n_taps;
 	return (1.0 - alpha) / 2.0 + (1.0 / 2.0) * cos(x) +
 		(alpha / 2.0) * cos(2 * x);
 }
-
+#else
+static inline double window_cosh(double x, double n_taps)
+{
+	double R = 95.0;
+	double A = -325.1E-6 * (R * R) + 0.1677 * R - 3.149;
+	x =  2.0 * M_PI * x / n_taps;
+	return cosh(A * sqrt(1 - pow(x / M_PI, 2))) / cosh(A);
+}
+#endif
 
 static int build_filter(float *taps, uint32_t stride, uint32_t n_taps, uint32_t n_phases, double cutoff)
 {
@@ -77,7 +86,7 @@ static int build_filter(float *taps, uint32_t stride, uint32_t n_taps, uint32_t 
 			/* exploit symmetry in filter taps */
 			taps[(n_phases - i) * stride + n_taps12 + j] =
 				taps[i * stride + (n_taps12 - j - 1)] =
-					cutoff * sinc(t * cutoff) * blackman(t, n_taps);
+					cutoff * sinc(t * cutoff) * window_cosh(t, n_taps);
 		}
 	}
 	return 0;
@@ -124,27 +133,27 @@ MAKE_RESAMPLER_COPY(c);
 MAKE_RESAMPLER_FULL(c);
 MAKE_RESAMPLER_INTER(c);
 
+#define MAKE(fmt,copy,full,inter,...) \
+	{ SPA_AUDIO_FORMAT_ ##fmt, do_resample_ ##copy, #copy, \
+		do_resample_ ##full, #full, do_resample_ ##inter, #inter, __VA_ARGS__ }
+
 static struct resample_info resample_table[] =
 {
 #if defined (HAVE_NEON)
-	{ SPA_AUDIO_FORMAT_F32, SPA_CPU_FLAG_NEON,
-		do_resample_copy_c, do_resample_full_neon, do_resample_inter_neon },
+	MAKE(F32, copy_c, full_neon, inter_neon, SPA_CPU_FLAG_NEON),
 #endif
 #if defined(HAVE_AVX) && defined(HAVE_FMA)
-	{ SPA_AUDIO_FORMAT_F32, SPA_CPU_FLAG_AVX | SPA_CPU_FLAG_FMA3,
-		do_resample_copy_c, do_resample_full_avx, do_resample_inter_avx },
+	MAKE(F32, copy_c, full_avx, inter_avx, SPA_CPU_FLAG_AVX | SPA_CPU_FLAG_FMA3),
 #endif
 #if defined (HAVE_SSSE3)
-	{ SPA_AUDIO_FORMAT_F32, SPA_CPU_FLAG_SSSE3 | SPA_CPU_FLAG_SLOW_UNALIGNED,
-		do_resample_copy_c, do_resample_full_ssse3, do_resample_inter_ssse3 },
+	MAKE(F32, copy_c, full_ssse3, inter_ssse3, SPA_CPU_FLAG_SSSE3 | SPA_CPU_FLAG_SLOW_UNALIGNED),
 #endif
 #if defined (HAVE_SSE)
-	{ SPA_AUDIO_FORMAT_F32, SPA_CPU_FLAG_SSE,
-		do_resample_copy_c, do_resample_full_sse, do_resample_inter_sse },
+	MAKE(F32, copy_c, full_sse, inter_sse, SPA_CPU_FLAG_SSE),
 #endif
-	{ SPA_AUDIO_FORMAT_F32, 0,
-		do_resample_copy_c, do_resample_full_c, do_resample_inter_c },
+	MAKE(F32, copy_c, full_c, inter_c),
 };
+#undef MAKE
 
 #define MATCH_CPU_FLAGS(a,b)	((a) == 0 || ((a) & (b)) == a)
 static const struct resample_info *find_resample_info(uint32_t format, uint32_t cpu_flags)
@@ -200,12 +209,18 @@ static void impl_native_update_rate(struct resample *r, double rate)
 	data->inc = data->in_rate / data->out_rate;
 	data->frac = data->in_rate % data->out_rate;
 
-	if (data->in_rate == data->out_rate)
+	if (data->in_rate == data->out_rate) {
 		data->func = data->info->process_copy;
-	else if (rate == 1.0)
+		r->func_name = data->info->copy_name;
+	}
+	else if (rate == 1.0) {
 		data->func = data->info->process_full;
-	else
+		r->func_name = data->info->full_name;
+	}
+	else {
 		data->func = data->info->process_inter;
+		r->func_name = data->info->inter_name;
+	}
 
 	spa_log_trace_fp(r->log, "native %p: rate:%f in:%d out:%d phase:%d inc:%d frac:%d", r,
 			rate, data->in_rate, data->out_rate, data->phase, data->inc, data->frac);
@@ -396,10 +411,9 @@ int resample_native_init(struct resample *r)
 	build_filter(d->filter, d->filter_stride, n_taps, n_phases, scale);
 
 	d->info = find_resample_info(SPA_AUDIO_FORMAT_F32, r->cpu_flags);
-	if (SPA_UNLIKELY(!d->info))
-	{
+	if (SPA_UNLIKELY(d->info == NULL)) {
 	    spa_log_error(r->log, "failed to find suitable resample format!");
-	    return -1;
+	    return -ENOTSUP;
 	}
 
 	spa_log_debug(r->log, "native %p: q:%d in:%d out:%d n_taps:%d n_phases:%d features:%08x:%08x",
