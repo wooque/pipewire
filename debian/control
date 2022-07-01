@@ -248,7 +248,7 @@ Breaks: pipewire-audio-client-libraries
 Depends: pipewire (= ${binary:Version}),
          ${misc:Depends},
          ${shlibs:Depends}
-Description: PipeWire PulseAudio daemon
+Description: PipeWire ALSA plugin
  PipeWire is a server and user space API to deal with multimedia
  pipelines. This includes:
  .
@@ -257,7 +257,7 @@ Description: PipeWire PulseAudio daemon
   - Accessing sources of video for consumption.
   - Generating graphs for audio and video processing.
  .
- This package contains the alsa plugin.
+ This package contains the ALSA plugin.
 
 Package: pipewire-jack
 Section: sound
@@ -268,7 +268,7 @@ Breaks: pipewire-audio-client-libraries
 Depends: pipewire (= ${binary:Version}),
          ${misc:Depends},
          ${shlibs:Depends}
-Description: PipeWire PulseAudio daemon
+Description: PipeWire JACK plugin
  PipeWire is a server and user space API to deal with multimedia
  pipelines. This includes:
  .
@@ -277,7 +277,7 @@ Description: PipeWire PulseAudio daemon
   - Accessing sources of video for consumption.
   - Generating graphs for audio and video processing.
  .
- This package contains the jack plugin.
+ This package contains the JACK plugin.
 
 Package: pipewire-tests
 Architecture: linux-any
