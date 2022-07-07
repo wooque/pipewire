@@ -11,6 +11,7 @@ pipewire (0.3.54-1) UNRELEASED; urgency=medium
       and pipewire-jack
   * Improve description of pipewire-alsa and pipewire-jack
   * Move the V4L2 plugin into its own package
+  * Update copyright file
 
  -- Dylan Aïssi <daissi@debian.org>  Thu, 07 Jul 2022 14:21:25 +0200
 
