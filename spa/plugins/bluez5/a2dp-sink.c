@@ -743,7 +743,7 @@ again:
 		 * => timeout = (quantum - max_excess)/quantum * packet_time
 		 */
 		uint64_t max_excess = 2*256;
-		uint64_t packet_samples = this->frame_count * this->block_size / port->frame_size;
+		uint64_t packet_samples = (uint64_t)this->frame_count * this->block_size / port->frame_size;
 		uint64_t packet_time = packet_samples * SPA_NSEC_PER_SEC / port->current_format.info.raw.rate;
 		uint64_t quantum = SPA_LIKELY(this->clock) ? this->clock->duration : 0;
 		uint64_t timeout = (quantum > max_excess) ?
@@ -843,7 +843,7 @@ static void a2dp_on_timeout(struct spa_source *source)
 	prev_time = this->current_time;
 	now_time = this->current_time = this->next_time;
 
-	spa_log_debug(this->log, "%p: timeout %"PRIu64" %"PRIu64"", this,
+	spa_log_debug(this->log, "%p: timer %"PRIu64" %"PRIu64"", this,
 			now_time, now_time - prev_time);
 
 	if (SPA_LIKELY(this->position)) {
