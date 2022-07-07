@@ -5,8 +5,10 @@ pipewire (0.3.54-1) UNRELEASED; urgency=medium
 
   [ Dylan Aïssi ]
   * New upstream release
+     - Fix issue with microphone input on bluetooth headset (Closes: #1014458)
   * pipewire-jack: remove suggests pulseaudio-utils and libspa-0.2-bluetooth
-  * Switch section from video to sound for pipewire-pulse, pipewire-alsa and pipewire-jack
+  * Switch section from video to sound for pipewire-pulse, pipewire-alsa
+      and pipewire-jack
   * Improve description of pipewire-alsa and pipewire-jack
   * Move the V4L2 plugin into its own package
 
