@@ -166,10 +166,10 @@ struct dir {
 	unsigned int have_profile:1;
 	struct spa_latency_info latency;
 
-	uint32_t src_remap[MAX_PORTS];
-	uint32_t dst_remap[MAX_PORTS];
+	uint32_t remap[MAX_PORTS];
 
 	struct convert conv;
+	unsigned int need_remap:1;
 	unsigned int is_passthrough:1;
 	unsigned int control:1;
 };
@@ -221,9 +221,7 @@ struct impl {
 	uint32_t empty_size;
 	float *empty;
 	float *scratch;
-	float *tmp;
-	float *tmp2;
-
+	float *tmp[2];
 	float *tmp_datas[2][MAX_PORTS];
 };
 
@@ -438,21 +436,21 @@ static int impl_node_enum_params(void *object, int seq,
 			param = spa_pod_builder_add_object(&b,
 				SPA_TYPE_OBJECT_PropInfo, id,
 				SPA_PROP_INFO_id,   SPA_POD_Id(SPA_PROP_volume),
-				SPA_PROP_INFO_name, SPA_POD_String("Volume"),
+				SPA_PROP_INFO_description, SPA_POD_String("Volume"),
 				SPA_PROP_INFO_type, SPA_POD_CHOICE_RANGE_Float(p->volume, 0.0, 10.0));
 			break;
 		case 1:
 			param = spa_pod_builder_add_object(&b,
 				SPA_TYPE_OBJECT_PropInfo, id,
 				SPA_PROP_INFO_id,   SPA_POD_Id(SPA_PROP_mute),
-				SPA_PROP_INFO_name, SPA_POD_String("Mute"),
+				SPA_PROP_INFO_description, SPA_POD_String("Mute"),
 				SPA_PROP_INFO_type, SPA_POD_CHOICE_Bool(p->channel.mute));
 			break;
 		case 2:
 			param = spa_pod_builder_add_object(&b,
 				SPA_TYPE_OBJECT_PropInfo, id,
 				SPA_PROP_INFO_id,   SPA_POD_Id(SPA_PROP_channelVolumes),
-				SPA_PROP_INFO_name, SPA_POD_String("Channel Volumes"),
+				SPA_PROP_INFO_description, SPA_POD_String("Channel Volumes"),
 				SPA_PROP_INFO_type, SPA_POD_CHOICE_RANGE_Float(p->volume, 0.0, 10.0),
 				SPA_PROP_INFO_container, SPA_POD_Id(SPA_TYPE_Array));
 			break;
@@ -460,7 +458,7 @@ static int impl_node_enum_params(void *object, int seq,
 			param = spa_pod_builder_add_object(&b,
 				SPA_TYPE_OBJECT_PropInfo, id,
 				SPA_PROP_INFO_id,   SPA_POD_Id(SPA_PROP_channelMap),
-				SPA_PROP_INFO_name, SPA_POD_String("Channel Map"),
+				SPA_PROP_INFO_description, SPA_POD_String("Channel Map"),
 				SPA_PROP_INFO_type, SPA_POD_Id(SPA_AUDIO_CHANNEL_UNKNOWN),
 				SPA_PROP_INFO_container, SPA_POD_Id(SPA_TYPE_Array));
 			break;
@@ -468,14 +466,14 @@ static int impl_node_enum_params(void *object, int seq,
 			param = spa_pod_builder_add_object(&b,
 				SPA_TYPE_OBJECT_PropInfo, id,
 				SPA_PROP_INFO_id,   SPA_POD_Id(SPA_PROP_monitorMute),
-				SPA_PROP_INFO_name, SPA_POD_String("Monitor Mute"),
+				SPA_PROP_INFO_description, SPA_POD_String("Monitor Mute"),
 				SPA_PROP_INFO_type, SPA_POD_CHOICE_Bool(p->monitor.mute));
 			break;
 		case 5:
 			param = spa_pod_builder_add_object(&b,
 				SPA_TYPE_OBJECT_PropInfo, id,
 				SPA_PROP_INFO_id,   SPA_POD_Id(SPA_PROP_monitorVolumes),
-				SPA_PROP_INFO_name, SPA_POD_String("Monitor Volumes"),
+				SPA_PROP_INFO_description, SPA_POD_String("Monitor Volumes"),
 				SPA_PROP_INFO_type, SPA_POD_CHOICE_RANGE_Float(p->volume, 0.0, 10.0),
 				SPA_PROP_INFO_container, SPA_POD_Id(SPA_TYPE_Array));
 			break;
@@ -483,14 +481,14 @@ static int impl_node_enum_params(void *object, int seq,
 			param = spa_pod_builder_add_object(&b,
 				SPA_TYPE_OBJECT_PropInfo, id,
 				SPA_PROP_INFO_id,   SPA_POD_Id(SPA_PROP_softMute),
-				SPA_PROP_INFO_name, SPA_POD_String("Soft Mute"),
+				SPA_PROP_INFO_description, SPA_POD_String("Soft Mute"),
 				SPA_PROP_INFO_type, SPA_POD_CHOICE_Bool(p->soft.mute));
 			break;
 		case 7:
 			param = spa_pod_builder_add_object(&b,
 				SPA_TYPE_OBJECT_PropInfo, id,
 				SPA_PROP_INFO_id,   SPA_POD_Id(SPA_PROP_softVolumes),
-				SPA_PROP_INFO_name, SPA_POD_String("Soft Volumes"),
+				SPA_PROP_INFO_description, SPA_POD_String("Soft Volumes"),
 				SPA_PROP_INFO_type, SPA_POD_CHOICE_RANGE_Float(p->volume, 0.0, 10.0),
 				SPA_PROP_INFO_container, SPA_POD_Id(SPA_TYPE_Array));
 			break;
@@ -1104,6 +1102,7 @@ static int setup_in_convert(struct impl *this)
 	struct dir *in = &this->dir[SPA_DIRECTION_INPUT];
 	struct spa_audio_info src_info, dst_info;
 	int res;
+	bool remap = false;
 
 	src_info = in->format;
 	dst_info = src_info;
@@ -1125,10 +1124,11 @@ static int setup_in_convert(struct impl *this)
 			if (src_info.info.raw.position[i] !=
 			    dst_info.info.raw.position[j])
 				continue;
-			in->src_remap[i] = j;
-			in->dst_remap[j] = i;
-			spa_log_debug(this->log, "%p: channel %d -> %d (%s -> %s)", this,
-					i, j,
+			in->remap[i] = j;
+			if (i != j)
+				remap = true;
+			spa_log_debug(this->log, "%p: channel %d (%d) -> %d (%s -> %s)", this,
+					i, in->remap[i], j,
 					spa_debug_type_find_short_name(spa_type_audio_channel,
 						src_info.info.raw.position[i]),
 					spa_debug_type_find_short_name(spa_type_audio_channel,
@@ -1137,17 +1137,21 @@ static int setup_in_convert(struct impl *this)
 			break;
 		}
 	}
+	if (in->conv.free)
+		convert_free(&in->conv);
+
 	in->conv.src_fmt = src_info.info.raw.format;
 	in->conv.dst_fmt = dst_info.info.raw.format;
 	in->conv.n_channels = dst_info.info.raw.channels;
 	in->conv.cpu_flags = this->cpu_flags;
+	in->need_remap = remap;
 
 	if ((res = convert_init(&in->conv)) < 0)
 		return res;
 
-	spa_log_debug(this->log, "%p: got converter features %08x:%08x passthrough:%d %s", this,
+	spa_log_debug(this->log, "%p: got converter features %08x:%08x passthrough:%d remap:%d %s", this,
 			this->cpu_flags, in->conv.cpu_flags, in->conv.is_passthrough,
-			in->conv.func_name);
+			remap, in->conv.func_name);
 
 	return 0;
 }
@@ -1266,7 +1270,7 @@ static void set_volume(struct impl *this)
 		vol = &this->props.channel;
 
 	for (i = 0; i < vol->n_volumes; i++)
-		volumes[i] = vol->volumes[dir->src_remap[i]];
+		volumes[i] = vol->volumes[dir->remap[i]];
 
 	channelmix_set_volume(&this->mix, this->props.volume, vol->mute,
 			vol->n_volumes, volumes);
@@ -1396,6 +1400,7 @@ static int setup_out_convert(struct impl *this)
 	struct dir *out = &this->dir[SPA_DIRECTION_OUTPUT];
 	struct spa_audio_info src_info, dst_info;
 	int res;
+	bool remap = false;
 
 	dst_info = out->format;
 	src_info = dst_info;
@@ -1417,10 +1422,12 @@ static int setup_out_convert(struct impl *this)
 			if (src_info.info.raw.position[i] !=
 			    dst_info.info.raw.position[j])
 				continue;
-			out->src_remap[i] = j;
-			out->dst_remap[j] = i;
-			spa_log_debug(this->log, "%p: channel %d -> %d (%s -> %s)", this,
-					i, j,
+			out->remap[i] = j;
+			if (i != j)
+				remap = true;
+
+			spa_log_debug(this->log, "%p: channel %d (%d) -> %d (%s -> %s)", this,
+					i, out->remap[i], j,
 					spa_debug_type_find_short_name(spa_type_audio_channel,
 						src_info.info.raw.position[i]),
 					spa_debug_type_find_short_name(spa_type_audio_channel,
@@ -1429,20 +1436,23 @@ static int setup_out_convert(struct impl *this)
 			break;
 		}
 	}
-	out->conv.quantize = calc_width(&dst_info) * 8;
+	if (out->conv.free)
+		convert_free(&out->conv);
+
 	out->conv.src_fmt = src_info.info.raw.format;
 	out->conv.dst_fmt = dst_info.info.raw.format;
 	out->conv.rate = dst_info.info.raw.rate;
 	out->conv.n_channels = dst_info.info.raw.channels;
 	out->conv.cpu_flags = this->cpu_flags;
+	out->need_remap = remap;
 
 	if ((res = convert_init(&out->conv)) < 0)
 		return res;
 
-	spa_log_debug(this->log, "%p: got converter features %08x:%08x quant:%d:%d:%d passthrough:%d %s", this,
+	spa_log_debug(this->log, "%p: got converter features %08x:%08x quant:%d:%d"
+			" passthrough:%d remap:%d %s", this,
 			this->cpu_flags, out->conv.cpu_flags, out->conv.method,
-			out->conv.quantize, out->conv.noise,
-			out->conv.is_passthrough, out->conv.func_name);
+			out->conv.noise, out->conv.is_passthrough, remap, out->conv.func_name);
 
 	return 0;
 }
@@ -1491,9 +1501,9 @@ static int setup_convert(struct impl *this)
 		return res;
 
 	for (i = 0; i < MAX_PORTS; i++) {
-		this->tmp_datas[0][i] = SPA_PTROFF(this->tmp, this->empty_size * i, void);
+		this->tmp_datas[0][i] = SPA_PTROFF(this->tmp[0], this->empty_size * i, void);
 		this->tmp_datas[0][i] = SPA_PTR_ALIGN(this->tmp_datas[0][i], MAX_ALIGN, void);
-		this->tmp_datas[1][i] = SPA_PTROFF(this->tmp2, this->empty_size * i, void);
+		this->tmp_datas[1][i] = SPA_PTROFF(this->tmp[1], this->empty_size * i, void);
 		this->tmp_datas[1][i] = SPA_PTR_ALIGN(this->tmp_datas[1][i], MAX_ALIGN, void);
 	}
 
@@ -2009,7 +2019,8 @@ impl_node_port_use_buffers(void *object,
 
 	clear_buffers(this, port);
 
-	maxsize = 0;
+	maxsize = this->quantum_limit * sizeof(float);
+
 	for (i = 0; i < n_buffers; i++) {
 		struct buffer *b;
 		uint32_t n_datas = buffers[i]->n_datas;
@@ -2050,10 +2061,10 @@ impl_node_port_use_buffers(void *object,
 	if (maxsize > this->empty_size) {
 		this->empty = realloc(this->empty, maxsize + MAX_ALIGN);
 		this->scratch = realloc(this->scratch, maxsize + MAX_ALIGN);
-		this->tmp = realloc(this->tmp, (4 * maxsize + MAX_ALIGN) * MAX_PORTS);
-		this->tmp2 = realloc(this->tmp2, (4 * maxsize + MAX_ALIGN) * MAX_PORTS);
+		this->tmp[0] = realloc(this->tmp[0], (maxsize + MAX_ALIGN) * MAX_PORTS);
+		this->tmp[1] = realloc(this->tmp[1], (maxsize + MAX_ALIGN) * MAX_PORTS);
 		if (this->empty == NULL || this->scratch == NULL ||
-		    this->tmp == NULL || this->tmp2 == NULL)
+		    this->tmp[0] == NULL || this->tmp[1] == NULL)
 			return -errno;
 		memset(this->empty, 0, maxsize + MAX_ALIGN);
 		this->empty_size = maxsize;
@@ -2221,7 +2232,8 @@ static int impl_node_process(void *object)
 {
 	struct impl *this = object;
 	const void *src_datas[MAX_PORTS], **in_datas;
-	void *dst_datas[MAX_PORTS], **out_datas;
+	void *dst_datas[MAX_PORTS], *remap_src_datas[MAX_PORTS], *remap_dst_datas[MAX_PORTS];
+	void **out_datas, **dst_remap;
 	uint32_t i, j, n_src_datas = 0, n_dst_datas = 0, n_mon_datas = 0, remap;
 	uint32_t n_samples, max_in, n_out, max_out, quant_samples;
 	struct port *port, *ctrlport = NULL;
@@ -2229,14 +2241,13 @@ static int impl_node_process(void *object)
 	struct spa_data *bd;
 	struct dir *dir;
 	int tmp = 0, res = 0;
-	bool in_passthrough, mix_passthrough, resample_passthrough, out_passthrough, end_passthrough;
+	bool in_passthrough, mix_passthrough, resample_passthrough, out_passthrough;
 	bool in_avail = false, flush_in = false, flush_out = false, draining = false, in_empty = true;
 	struct spa_io_buffers *io, *ctrlio = NULL;
 	const struct spa_pod_sequence *ctrl = NULL;
 
 	dir = &this->dir[SPA_DIRECTION_INPUT];
 	in_passthrough = dir->conv.is_passthrough;
-
 	max_in = UINT32_MAX;
 
 	/* collect input port data */
@@ -2255,6 +2266,7 @@ static int impl_node_process(void *object)
 				spa_log_trace_fp(this->log, "%p: empty input port %d %p %d %d %d",
 						this, port->id, io, io->status, io->buffer_id,
 						port->n_buffers);
+				this->drained = false;
 			}
 			buf = NULL;
 		} else if (SPA_UNLIKELY(io->buffer_id >= port->n_buffers)) {
@@ -2264,6 +2276,9 @@ static int impl_node_process(void *object)
 			io->status = -EINVAL;
 			buf = NULL;
 		} else {
+			spa_log_trace_fp(this->log, "%p: input buffer port %d io:%p status:%d id:%d n:%d",
+					this, port->id, io, io->status, io->buffer_id,
+					port->n_buffers);
 			buf = &port->buffers[io->buffer_id];
 		}
 
@@ -2273,7 +2288,7 @@ static int impl_node_process(void *object)
 					spa_log_trace_fp(this->log, "%p: empty control %d", this,
 							i * port->blocks + j);
 				} else {
-					remap = dir->src_remap[n_src_datas++];
+					remap = n_src_datas++;
 					src_datas[remap] = SPA_PTR_ALIGN(this->empty, MAX_ALIGN, void);
 					spa_log_trace_fp(this->log, "%p: empty input %d->%d", this,
 							i * port->blocks + j, remap);
@@ -2308,7 +2323,7 @@ static int impl_node_process(void *object)
 				} else  {
 					max_in = SPA_MIN(max_in, size / port->stride);
 
-					remap = dir->src_remap[n_src_datas++];
+					remap = n_src_datas++;
 					offs += this->in_offset * port->stride;
 					src_datas[remap] = SPA_PTROFF(bd->data, offs, void);
 
@@ -2374,8 +2389,6 @@ static int impl_node_process(void *object)
 	}
 
 	dir = &this->dir[SPA_DIRECTION_OUTPUT];
-	out_passthrough = dir->conv.is_passthrough;
-
 	/* collect output ports and monitor ports data */
 	for (i = 0; i < dir->n_ports; i++) {
 		port = GET_OUT_PORT(this, i);
@@ -2401,7 +2414,7 @@ static int impl_node_process(void *object)
 				} else if (port->is_control) {
 					spa_log_trace_fp(this->log, "%p: empty control %d", this, j);
 				} else {
-					remap = dir->dst_remap[n_dst_datas++];
+					remap = n_dst_datas++;
 					dst_datas[remap] = SPA_PTR_ALIGN(this->scratch, MAX_ALIGN, void);
 					spa_log_trace_fp(this->log, "%p: empty output %d->%d", this,
 						i * port->blocks + j, remap);
@@ -2440,7 +2453,7 @@ static int impl_node_process(void *object)
 				} else if (SPA_UNLIKELY(port->is_control)) {
 					spa_log_trace_fp(this->log, "%p: control %d", this, j);
 				} else {
-					remap = dir->dst_remap[n_dst_datas++];
+					remap = n_dst_datas++;
 					dst_datas[remap] = SPA_PTROFF(bd->data,
 							this->out_offset * port->stride, void);
 					max_out = SPA_MIN(max_out, bd->maxsize / port->stride);
@@ -2452,34 +2465,54 @@ static int impl_node_process(void *object)
 			}
 		}
 	}
+	mix_passthrough = SPA_FLAG_IS_SET(this->mix.flags, CHANNELMIX_FLAG_IDENTITY) &&
+		(ctrlport == NULL || ctrlport->ctrl == NULL);
+
+	out_passthrough = dir->conv.is_passthrough;
+	if (in_passthrough && mix_passthrough && resample_passthrough)
+		out_passthrough = false;
+
+	if (out_passthrough && dir->need_remap) {
+		for (i = 0; i < dir->conv.n_channels; i++) {
+			remap_dst_datas[i] = dst_datas[dir->remap[i]];
+			spa_log_trace_fp(this->log, "%p: output remap %d -> %d", this, i, dir->remap[i]);
+		}
+		dst_remap = (void **)remap_dst_datas;
+	} else {
+		dst_remap = (void **)dst_datas;
+	}
 
 	n_out = max_out - SPA_MIN(max_out, this->out_offset);
 
-	mix_passthrough = SPA_FLAG_IS_SET(this->mix.flags, CHANNELMIX_FLAG_IDENTITY) &&
-		(ctrlport == NULL || ctrlport->ctrl == NULL);
-	end_passthrough = mix_passthrough && resample_passthrough && out_passthrough;
-
-	if (!in_passthrough || end_passthrough) {
-		if (end_passthrough) {
-			out_datas = (void **)dst_datas;
-			n_samples = SPA_MIN(n_samples, n_out);
-		}
+	dir = &this->dir[SPA_DIRECTION_INPUT];
+	if (!in_passthrough) {
+		if (mix_passthrough && resample_passthrough && out_passthrough)
+			out_datas = (void **)dst_remap;
 		else
 			out_datas = (void **)this->tmp_datas[(tmp++) & 1];
-		spa_log_trace_fp(this->log, "%p: convert %d %d", this, n_samples, end_passthrough);
-		convert_process(&this->dir[SPA_DIRECTION_INPUT].conv, out_datas, src_datas, n_samples);
 	} else {
 		out_datas = (void **)src_datas;
+	}
+	if (dir->need_remap) {
+		for (i = 0; i < dir->conv.n_channels; i++) {
+			remap_src_datas[i] = out_datas[dir->remap[i]];
+			spa_log_trace_fp(this->log, "%p: input remap %d -> %d", this, dir->remap[i], i);
+		}
+		out_datas = (void **)remap_src_datas;
+	}
+	if (!in_passthrough) {
+		spa_log_trace_fp(this->log, "%p: input convert %d", this, n_samples);
+		convert_process(&dir->conv, out_datas, src_datas, n_samples);
 	}
 
 	if (!mix_passthrough) {
 		in_datas = (const void**)out_datas;
 		if (resample_passthrough && out_passthrough) {
-			out_datas = (void **)dst_datas;
+			out_datas = (void **)dst_remap;
 			n_samples = SPA_MIN(n_samples, n_out);
-		}
-		else
+		} else {
 			out_datas = (void **)this->tmp_datas[(tmp++) & 1];
+		}
 		spa_log_trace_fp(this->log, "%p: channelmix %d %d %d", this, n_samples,
 				resample_passthrough, out_passthrough);
 		if (ctrlport != NULL && ctrlport->ctrl != NULL) {
@@ -2492,13 +2525,12 @@ static int impl_node_process(void *object)
 			channelmix_process(&this->mix, out_datas, in_datas, n_samples);
 		}
 	}
-
 	if (!resample_passthrough) {
 		uint32_t in_len, out_len;
 
 		in_datas = (const void**)out_datas;
 		if (out_passthrough)
-			out_datas = (void **)dst_datas;
+			out_datas = (void **)dst_remap;
 		else
 			out_datas = (void **)this->tmp_datas[(tmp++) & 1];
 
@@ -2516,9 +2548,18 @@ static int impl_node_process(void *object)
 	this->out_offset += n_samples;
 
 	if (!out_passthrough) {
-		in_datas = (const void**)out_datas;
-		spa_log_trace_fp(this->log, "%p: convert %d", this, n_samples);
-		convert_process(&this->dir[SPA_DIRECTION_OUTPUT].conv, dst_datas, in_datas, n_samples);
+		dir = &this->dir[SPA_DIRECTION_OUTPUT];
+		if (dir->need_remap) {
+			for (i = 0; i < dir->conv.n_channels; i++) {
+				remap_dst_datas[i] = out_datas[dir->remap[i]];
+				spa_log_trace_fp(this->log, "%p: output remap %d -> %d", this, i, dir->remap[i]);
+			}
+			in_datas = (const void**)remap_dst_datas;
+		} else {
+			in_datas = (const void**)out_datas;
+		}
+		spa_log_trace_fp(this->log, "%p: output convert %d", this, n_samples);
+		convert_process(&dir->conv, dst_datas, in_datas, n_samples);
 	}
 
 	spa_log_trace_fp(this->log, "%d/%d  %d/%d %d->%d", this->in_offset, max_in,
@@ -2534,7 +2575,8 @@ static int impl_node_process(void *object)
 			if (SPA_UNLIKELY((io = port->io) == NULL))
 				continue;
 			spa_log_trace_fp(this->log, "return: input %d %d", port->id, io->buffer_id);
-			io->status = SPA_STATUS_NEED_DATA;
+			if (!draining)
+				io->status = SPA_STATUS_NEED_DATA;
 		}
 		this->in_offset = 0;
 		max_in = 0;
@@ -2641,11 +2683,15 @@ static int impl_clear(struct spa_handle *handle)
 		free(this->dir[SPA_DIRECTION_OUTPUT].ports[i]);
 	free(this->empty);
 	free(this->scratch);
-	free(this->tmp);
-	free(this->tmp2);
+	free(this->tmp[0]);
+	free(this->tmp[1]);
 
 	if (this->resample.free)
 		resample_free(&this->resample);
+	if (this->dir[0].conv.free)
+		convert_free(&this->dir[0].conv);
+	if (this->dir[1].conv.free)
+		convert_free(&this->dir[1].conv);
 
 	return 0;
 }
