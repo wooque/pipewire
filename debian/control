@@ -283,10 +283,10 @@ Package: pipewire-v4l2
 Section: video
 Architecture: linux-any
 Multi-Arch: foreign
-Replaces: pipewire-bin (<< 0.3.53-2),
-          libpipewire-0.3-modules (<< 0.3.53-2)
-Breaks: pipewire-bin (<< 0.3.53-2),
-        libpipewire-0.3-modules (<< 0.3.53-2)
+Replaces: pipewire-bin (<< 0.3.54-1),
+          libpipewire-0.3-modules (<< 0.3.54-1)
+Breaks: pipewire-bin (<< 0.3.54-1),
+        libpipewire-0.3-modules (<< 0.3.54-1)
 Depends: pipewire (= ${binary:Version}),
          ${misc:Depends},
          ${shlibs:Depends}
