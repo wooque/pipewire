@@ -1,4 +1,4 @@
-pipewire (0.3.54-1) UNRELEASED; urgency=medium
+pipewire (0.3.54-1) unstable; urgency=medium
 
   [ Sebastien Bacher ]
   * Split the legacy pipewire-audio-client-libraries in alsa and jack
@@ -13,7 +13,7 @@ pipewire (0.3.54-1) UNRELEASED; urgency=medium
   * Move the V4L2 plugin into its own package
   * Update copyright file
 
- -- Dylan Aïssi <daissi@debian.org>  Thu, 07 Jul 2022 14:21:25 +0200
+ -- Dylan Aïssi <daissi@debian.org>  Thu, 07 Jul 2022 17:11:37 +0200
 
 pipewire (0.3.53-1) unstable; urgency=medium
 
