@@ -1,6 +1,8 @@
 pipewire (0.3.55-1) UNRELEASED; urgency=medium
 
   * New upstream release
+  * Cherry-pick upstream recommended patch:
+      - 40552a0e: jack: only mix when we have input to mix
 
  -- Dylan Aïssi <daissi@debian.org>  Sat, 16 Jul 2022 22:12:09 +0200
 
