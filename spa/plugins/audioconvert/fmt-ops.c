@@ -105,13 +105,13 @@ static struct conv_info conv_table[] =
 	MAKE(F32P, F32, 0, conv_32d_to_32_c),
 
 #if defined (HAVE_SSE2)
-	MAKE(F32_OE, F32P, 0, conv_32s_to_32sd_sse2, SPA_CPU_FLAG_SSE2),
+	MAKE(F32_OE, F32P, 0, conv_32s_to_32d_sse2, SPA_CPU_FLAG_SSE2),
 #endif
-	MAKE(F32_OE, F32P, 0, conv_32s_to_32sd_c),
+	MAKE(F32_OE, F32P, 0, conv_32s_to_32d_c),
 #if defined (HAVE_SSE2)
-	MAKE(F32P, F32_OE, 0, conv_32sd_to_32s_sse2, SPA_CPU_FLAG_SSE2),
+	MAKE(F32P, F32_OE, 0, conv_32d_to_32s_sse2, SPA_CPU_FLAG_SSE2),
 #endif
-	MAKE(F32P, F32_OE, 0, conv_32sd_to_32s_c),
+	MAKE(F32P, F32_OE, 0, conv_32d_to_32s_c),
 
 	MAKE(U32, F32, 0, conv_u32_to_f32_c),
 	MAKE(U32, F32P, 0, conv_u32_to_f32d_c),
@@ -199,6 +199,9 @@ static struct conv_info conv_table[] =
 	MAKE(F32, S16, 0, conv_f32_to_s16_c),
 
 	MAKE(F32P, S16P, 0, conv_f32d_to_s16d_shaped_c, 0, CONV_SHAPE),
+#if defined (HAVE_SSE2)
+	MAKE(F32P, S16P, 0, conv_f32d_to_s16d_dither_sse2, SPA_CPU_FLAG_SSE2, CONV_DITHER),
+#endif
 	MAKE(F32P, S16P, 0, conv_f32d_to_s16d_dither_c, 0, CONV_DITHER),
 #if defined (HAVE_SSE2)
 	MAKE(F32P, S16P, 0, conv_f32d_to_s16d_sse2, SPA_CPU_FLAG_SSE2),
@@ -208,6 +211,9 @@ static struct conv_info conv_table[] =
 	MAKE(F32, S16P, 0, conv_f32_to_s16d_c),
 
 	MAKE(F32P, S16, 0, conv_f32d_to_s16_shaped_c, 0, CONV_SHAPE),
+#if defined (HAVE_SSE2)
+	MAKE(F32P, S16, 0, conv_f32d_to_s16_dither_sse2, SPA_CPU_FLAG_SSE2, CONV_DITHER),
+#endif
 	MAKE(F32P, S16, 0, conv_f32d_to_s16_dither_c, 0, CONV_DITHER),
 #if defined (HAVE_NEON)
 	MAKE(F32P, S16, 0, conv_f32d_to_s16_neon, SPA_CPU_FLAG_NEON),
@@ -394,7 +400,10 @@ int convert_init(struct convert *conv)
 	const struct conv_info *info;
 	uint32_t i, dither_flags;
 
-	conv->scale = 1.0f / (float)(INT32_MAX >> conv->noise);
+	conv->scale = 1.0f / (float)(INT32_MAX);
+
+	if (conv->noise > 0)
+		conv->scale *= (1 << (conv->noise + 1));
 
 	/* disable dither if not needed */
 	if (!need_dither(conv->dst_fmt))
@@ -404,6 +413,9 @@ int convert_init(struct convert *conv)
 	 * audible ranges */
 	if (conv->method == DITHER_METHOD_SHAPED_5 && conv->rate < 32000)
 		conv->method = DITHER_METHOD_TRIANGULAR;
+
+	if (conv->method < DITHER_METHOD_TRIANGULAR)
+		conv->scale *= 0.5f;
 
 	dither_flags = 0;
 	if (conv->method != DITHER_METHOD_NONE || conv->noise)
