@@ -130,6 +130,7 @@ enum {
 enum {
 	CRYPTO_NONE,
 	CRYPTO_RSA,
+	CRYPTO_AUTH_SETUP,
 };
 enum {
 	CODEC_PCM,
@@ -257,7 +258,8 @@ static inline uint64_t ntp_now(int clockid)
 	return timespec_to_ntp(&now);
 }
 
-static int send_udp_sync_packet(struct impl *impl)
+static int send_udp_sync_packet(struct impl *impl,
+		struct sockaddr *dest_addr, socklen_t addrlen)
 {
 	uint32_t pkt[5];
 	uint32_t rtptime = impl->rtptime;
@@ -278,10 +280,11 @@ static int send_udp_sync_packet(struct impl *impl)
 	pw_log_debug("sync: delayed:%u now:%"PRIu64" rtptime:%u",
 			rtptime - delay, transmitted, rtptime);
 
-	return write(impl->control_fd, pkt, sizeof(pkt));
+	return sendto(impl->control_fd, pkt, sizeof(pkt), 0, dest_addr, addrlen);
 }
 
-static int send_udp_timing_packet(struct impl *impl, uint64_t remote, uint64_t received)
+static int send_udp_timing_packet(struct impl *impl, uint64_t remote, uint64_t received,
+		struct sockaddr *dest_addr, socklen_t addrlen)
 {
 	uint32_t pkt[8];
 	uint64_t transmitted;
@@ -299,7 +302,7 @@ static int send_udp_timing_packet(struct impl *impl, uint64_t remote, uint64_t r
 	pw_log_debug("sync: remote:%"PRIu64" received:%"PRIu64" transmitted:%"PRIu64,
 			remote, received, transmitted);
 
-	return write(impl->timing_fd, pkt, sizeof(pkt));
+	return sendto(impl->timing_fd, pkt, sizeof(pkt), 0, dest_addr, addrlen);
 }
 
 static int write_codec_pcm(void *dst, void *frames, uint32_t n_frames)
@@ -345,7 +348,7 @@ static int flush_to_udp_packet(struct impl *impl)
 	impl->sync++;
 	if (impl->first || impl->sync == impl->sync_period) {
 		impl->sync = 0;
-		send_udp_sync_packet(impl);
+		send_udp_sync_packet(impl, NULL, 0);
 	}
 	pkt[0] = htonl(0x80600000);
 	if (impl->first)
@@ -373,7 +376,7 @@ static int flush_to_udp_packet(struct impl *impl)
 	impl->seq = (impl->seq + 1) & 0xffff;
 
 	pw_log_debug("send %u", len + 12);
-	res = write(impl->server_fd, pkt, len + 12);
+	res = send(impl->server_fd, pkt, len + 12, 0);
 
 	impl->first = false;
 
@@ -417,7 +420,7 @@ static int flush_to_tcp_packet(struct impl *impl)
 	impl->seq = (impl->seq + 1) & 0xffff;
 
 	pw_log_debug("send %u", len + 16);
-	res = write(impl->server_fd, pkt, len + 16);
+	res = send(impl->server_fd, pkt, len + 16, 0);
 
 	impl->first = false;
 
@@ -593,9 +596,12 @@ on_timing_source_io(void *data, int fd, uint32_t mask)
 
 	if (mask & SPA_IO_IN) {
 		uint64_t remote, received;
+		struct sockaddr_storage sender;
+		socklen_t sender_size = sizeof(sender);
 
 		received = ntp_now(CLOCK_MONOTONIC);
-		bytes = read(impl->timing_fd, packet, sizeof(packet));
+		bytes = recvfrom(impl->timing_fd, packet, sizeof(packet), 0,
+				(struct sockaddr*)&sender, &sender_size);
 		if (bytes < 0) {
 			pw_log_debug("error reading timing packet: %m");
 			return;
@@ -609,7 +615,11 @@ on_timing_source_io(void *data, int fd, uint32_t mask)
 			return;
 
 		remote = ((uint64_t)ntohl(packet[6])) << 32 | ntohl(packet[7]);
-		send_udp_timing_packet(impl, remote, received);
+		if (send_udp_timing_packet(impl, remote, received,
+				(struct sockaddr *)&sender, sender_size) < 0) {
+			pw_log_warn("error sending timing packet");
+			return;
+		}
 	}
 }
 
@@ -833,10 +843,8 @@ static void rtsp_setup_reply(void *data, int status, const struct spa_dict *head
 			return;
 
 		ntp = ntp_now(CLOCK_MONOTONIC);
-		send_udp_timing_packet(impl, ntp, ntp);
+		send_udp_timing_packet(impl, ntp, ntp, NULL, 0);
 
-		impl->timing_source = pw_loop_add_io(impl->loop, impl->timing_fd,
-				SPA_IO_IN, false, on_timing_source_io, impl);
 		impl->control_source = pw_loop_add_io(impl->loop, impl->control_fd,
 				SPA_IO_IN, false, on_control_source_io, impl);
 
@@ -867,6 +875,9 @@ static int rtsp_do_setup(struct impl *impl)
 		impl->timing_fd = create_udp_socket(impl, &impl->timing_port);
 		if (impl->control_fd < 0 || impl->timing_fd < 0)
 			goto error;
+
+		impl->timing_source = pw_loop_add_io(impl->loop, impl->timing_fd,
+				SPA_IO_IN, false, on_timing_source_io, impl);
 
 		pw_properties_setf(impl->headers, "Transport",
 				"RTP/AVP/UDP;unicast;interleaved=0-1;mode=record;"
@@ -988,7 +999,7 @@ static int rtsp_do_announce(struct impl *impl)
 	char iv[16*2];
 	int res, frames, i, ip_version;
 	char *sdp;
-        char local_ip[256];
+	char local_ip[256];
 
 	host = pw_properties_get(impl->props, "raop.hostname");
 
@@ -1044,6 +1055,32 @@ static int rtsp_do_announce(struct impl *impl)
 	res = pw_rtsp_client_send(impl->rtsp, "ANNOUNCE", &impl->headers->dict,
 			"application/sdp", sdp, rtsp_announce_reply, impl);
 	free(sdp);
+
+	return res;
+}
+
+static void rtsp_auth_setup_reply(void *data, int status, const struct spa_dict *headers)
+{
+	struct impl *impl = data;
+
+	pw_log_info("reply %d", status);
+
+	impl->encryption = CRYPTO_NONE;
+
+	rtsp_do_announce(impl);
+}
+
+static int rtsp_do_auth_setup(struct impl *impl)
+{
+	int res;
+
+	char output[] = 
+		"\x01"
+		"\x59\x02\xed\xe9\x0d\x4e\xf2\xbd\x4c\xb6\x8a\x63\x30\x03\x82\x07"
+		"\xa9\x4d\xbd\x50\xd8\xaa\x46\x5b\x5d\x8c\x01\x2a\x0c\x7e\x1d\x4e";
+
+	res = pw_rtsp_client_url_send(impl->rtsp, "/auth-setup", "POST", &impl->headers->dict,
+			"application/octet-stream", output, rtsp_auth_setup_reply, impl);
 
 	return res;
 }
@@ -1168,7 +1205,10 @@ static void rtsp_options_reply(void *data, int status, const struct spa_dict *he
 		rtsp_do_auth(impl, headers);
 		break;
 	case 200:
-		rtsp_do_announce(impl);
+		if (impl->encryption == CRYPTO_AUTH_SETUP)
+			rtsp_do_auth_setup(impl);
+		else
+			rtsp_do_announce(impl);
 		break;
 	}
 }
@@ -1648,6 +1688,8 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 		impl->encryption = CRYPTO_NONE;
 	else if (spa_streq(str, "RSA"))
 		impl->encryption = CRYPTO_RSA;
+	else if (spa_streq(str, "auth_setup"))
+		impl->encryption = CRYPTO_AUTH_SETUP;
 	else {
 		pw_log_error( "can't handle encryption type %s", str);
 		res = -EINVAL;
