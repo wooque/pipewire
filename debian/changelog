@@ -4,6 +4,8 @@ pipewire (0.3.55-1) UNRELEASED; urgency=medium
   * Cherry-pick upstream recommended patch:
       - 40552a0e: jack: only mix when we have input to mix
   * Don't install new filter-chain example conf files
+  * Reintroduce pipewire-audio-client-libraries as a transitional package
+      to simplify the transition from Bullseye to Bookworm (Closes: #1014639)
 
  -- Dylan Aïssi <daissi@debian.org>  Sat, 16 Jul 2022 22:12:09 +0200
 

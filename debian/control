@@ -243,8 +243,8 @@ Package: pipewire-alsa
 Section: sound
 Architecture: linux-any
 Multi-Arch: foreign
-Replaces: pipewire-audio-client-libraries
-Breaks: pipewire-audio-client-libraries
+Replaces: pipewire-audio-client-libraries (<< 0.3.54-1~)
+Breaks: pipewire-audio-client-libraries (<< 0.3.54-1~)
 Depends: pipewire (= ${binary:Version}),
          ${misc:Depends},
          ${shlibs:Depends}
@@ -263,8 +263,8 @@ Package: pipewire-jack
 Section: sound
 Architecture: linux-any
 Multi-Arch: foreign
-Replaces: pipewire-audio-client-libraries
-Breaks: pipewire-audio-client-libraries
+Replaces: pipewire-audio-client-libraries (<< 0.3.54-1~)
+Breaks: pipewire-audio-client-libraries (<< 0.3.54-1~)
 Depends: pipewire (= ${binary:Version}),
          ${misc:Depends},
          ${shlibs:Depends}
@@ -370,3 +370,15 @@ Description: libraries for the PipeWire multimedia server - JACK client
  This package contains a plugin to make PipeWire able to connect to a
  JACK server, which will be used for audio playback and recording.
  Using PipeWire for audio is considered to be experimental.
+
+Package: pipewire-audio-client-libraries
+Section: oldlibs
+Architecture: all
+Depends: pipewire-alsa,
+         pipewire-jack
+Description: transitional package for pipewire-alsa and pipewire-jack
+ PipeWire is a server and user space API to deal with multimedia
+ pipelines.
+ .
+ This is a transitional package for pipewire-alsa and pipewire-jack.
+ It can safely be removed.
