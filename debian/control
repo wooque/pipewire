@@ -242,7 +242,7 @@ Description: PipeWire PulseAudio daemon
 Package: pipewire-alsa
 Section: sound
 Architecture: linux-any
-Multi-Arch: foreign
+Multi-Arch: same
 Replaces: pipewire-audio-client-libraries (<< 0.3.54-1~)
 Breaks: pipewire-audio-client-libraries (<< 0.3.54-1~)
 Depends: pipewire (= ${binary:Version}),
@@ -262,7 +262,7 @@ Description: PipeWire ALSA plugin
 Package: pipewire-jack
 Section: sound
 Architecture: linux-any
-Multi-Arch: foreign
+Multi-Arch: same
 Replaces: pipewire-audio-client-libraries (<< 0.3.54-1~)
 Breaks: pipewire-audio-client-libraries (<< 0.3.54-1~)
 Depends: pipewire (= ${binary:Version}),
@@ -282,7 +282,7 @@ Description: PipeWire JACK plugin
 Package: pipewire-v4l2
 Section: video
 Architecture: linux-any
-Multi-Arch: foreign
+Multi-Arch: same
 Replaces: pipewire-bin (<< 0.3.54-1),
           libpipewire-0.3-modules (<< 0.3.54-1)
 Breaks: pipewire-bin (<< 0.3.54-1),
