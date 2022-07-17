@@ -1,4 +1,4 @@
-pipewire (0.3.55-1) UNRELEASED; urgency=medium
+pipewire (0.3.55-1) unstable; urgency=medium
 
   * New upstream release
   * Cherry-pick upstream recommended patch:
@@ -8,7 +8,7 @@ pipewire (0.3.55-1) UNRELEASED; urgency=medium
       to simplify the transition from Bullseye to Bookworm (Closes: #1014639)
   * Mark pipewire-{alsa,jack,v4l2} as 'Multi-Arch: same' (Closes: #1014608)
 
- -- Dylan Aïssi <daissi@debian.org>  Sat, 16 Jul 2022 22:12:09 +0200
+ -- Dylan Aïssi <daissi@debian.org>  Sun, 17 Jul 2022 10:42:21 +0200
 
 pipewire (0.3.54-2) unstable; urgency=medium
 
