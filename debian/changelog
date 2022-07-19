@@ -8,6 +8,7 @@ pipewire (0.3.56-1) UNRELEASED; urgency=medium
       - 1a5ec445: avb: fix compilation on big endian
       - f857fd46: avb: fix compilation on big endian
   * Install the new avb module in libspa-0.2-modules
+  * Don't install new filter-chain example conf file
 
  -- Dylan Aïssi <daissi@debian.org>  Tue, 19 Jul 2022 22:07:56 +0200
 
