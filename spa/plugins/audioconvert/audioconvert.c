@@ -628,8 +628,8 @@ static int impl_node_enum_params(void *object, int seq,
 			param = spa_pod_builder_add_object(&b,
 				SPA_TYPE_OBJECT_PropInfo, id,
 				SPA_PROP_INFO_name, SPA_POD_String("dither.noise"),
-				SPA_PROP_INFO_description, SPA_POD_String("Add dithering noise"),
-				SPA_PROP_INFO_type, SPA_POD_CHOICE_RANGE_Int(this->dir[1].conv.noise, 0, 16),
+				SPA_PROP_INFO_description, SPA_POD_String("Add noise bits"),
+				SPA_PROP_INFO_type, SPA_POD_CHOICE_RANGE_Int(this->dir[1].conv.noise_bits, 0, 16),
 				SPA_PROP_INFO_params, SPA_POD_Bool(true));
 			break;
 		case 23:
@@ -643,7 +643,7 @@ static int impl_node_enum_params(void *object, int seq,
 				0);
 			spa_pod_builder_prop(&b, SPA_PROP_INFO_labels, 0);
 			spa_pod_builder_push_struct(&b, &f[1]);
-			for (i = 0; i < SPA_N_ELEMENTS(channelmix_upmix_info); i++) {
+			for (i = 0; i < SPA_N_ELEMENTS(dither_method_info); i++) {
 				spa_pod_builder_string(&b, dither_method_info[i].label);
 				spa_pod_builder_string(&b, dither_method_info[i].description);
 			}
@@ -719,7 +719,7 @@ static int impl_node_enum_params(void *object, int seq,
 			spa_pod_builder_string(&b, "resample.disable");
 			spa_pod_builder_bool(&b, p->resample_disabled);
 			spa_pod_builder_string(&b, "dither.noise");
-			spa_pod_builder_int(&b, this->dir[1].conv.noise);
+			spa_pod_builder_int(&b, this->dir[1].conv.noise_bits);
 			spa_pod_builder_string(&b, "dither.method");
 			spa_pod_builder_string(&b, dither_method_info[this->dir[1].conv.method].label);
 			spa_pod_builder_pop(&b, &f[1]);
@@ -792,7 +792,7 @@ static int audioconvert_set_param(struct impl *this, const char *k, const char *
 	else if (spa_streq(k, "resample.disable"))
 		this->props.resample_disabled = spa_atob(s);
 	else if (spa_streq(k, "dither.noise"))
-		spa_atou32(s, &this->dir[1].conv.noise, 0);
+		spa_atou32(s, &this->dir[1].conv.noise_bits, 0);
 	else if (spa_streq(k, "dither.method"))
 		this->dir[1].conv.method = dither_method_from_label(s);
 	else
@@ -1452,7 +1452,7 @@ static int setup_out_convert(struct impl *this)
 	spa_log_debug(this->log, "%p: got converter features %08x:%08x quant:%d:%d"
 			" passthrough:%d remap:%d %s", this,
 			this->cpu_flags, out->conv.cpu_flags, out->conv.method,
-			out->conv.noise, out->conv.is_passthrough, remap, out->conv.func_name);
+			out->conv.noise_bits, out->conv.is_passthrough, remap, out->conv.func_name);
 
 	return 0;
 }
@@ -2509,19 +2509,29 @@ static int impl_node_process(void *object)
 			out_datas = (void **)dst_remap;
 		else
 			out_datas = (void **)this->tmp_datas[(tmp++) & 1];
-	} else {
-		out_datas = (void **)src_datas;
-	}
-	if (dir->need_remap) {
-		for (i = 0; i < dir->conv.n_channels; i++) {
-			remap_src_datas[i] = out_datas[dir->remap[i]];
-			spa_log_trace_fp(this->log, "%p: input remap %d -> %d", this, dir->remap[i], i);
+
+		if (dir->need_remap) {
+			for (i = 0; i < dir->conv.n_channels; i++) {
+				remap_src_datas[i] = out_datas[dir->remap[i]];
+				spa_log_trace_fp(this->log, "%p: input remap %d -> %d", this, dir->remap[i], i);
+			}
+		} else {
+			for (i = 0; i < dir->conv.n_channels; i++)
+				remap_src_datas[i] = out_datas[i];
 		}
-		out_datas = (void **)remap_src_datas;
-	}
-	if (!in_passthrough) {
+
 		spa_log_trace_fp(this->log, "%p: input convert %d", this, n_samples);
-		convert_process(&dir->conv, out_datas, src_datas, n_samples);
+		convert_process(&dir->conv, remap_src_datas, src_datas, n_samples);
+	} else {
+		if (dir->need_remap) {
+			for (i = 0; i < dir->conv.n_channels; i++) {
+				remap_src_datas[dir->remap[i]] = (void *)src_datas[i];
+				spa_log_trace_fp(this->log, "%p: input remap %d -> %d", this, dir->remap[i], i);
+			}
+			out_datas = (void **)remap_src_datas;
+		} else {
+			out_datas = (void **)src_datas;
+		}
 	}
 
 	if (!mix_passthrough) {
@@ -2570,7 +2580,7 @@ static int impl_node_process(void *object)
 		dir = &this->dir[SPA_DIRECTION_OUTPUT];
 		if (dir->need_remap) {
 			for (i = 0; i < dir->conv.n_channels; i++) {
-				remap_dst_datas[i] = out_datas[dir->remap[i]];
+				remap_dst_datas[dir->remap[i]] = out_datas[i];
 				spa_log_trace_fp(this->log, "%p: output remap %d -> %d", this, i, dir->remap[i]);
 			}
 			in_datas = (const void**)remap_dst_datas;
