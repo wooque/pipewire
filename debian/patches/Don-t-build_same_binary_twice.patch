@@ -20,7 +20,7 @@ Signed-off-by: Dylan Aïssi <dylan.aissi@collabora.com>
 
 --- a/src/daemon/meson.build
 +++ b/src/daemon/meson.build
-@@ -90,12 +90,11 @@
+@@ -93,12 +93,11 @@
    dependencies : [ spa_dep, pipewire_dep, ],
  )
  
@@ -37,4 +37,4 @@ Signed-off-by: Dylan Aïssi <dylan.aissi@collabora.com>
 +        join_paths(get_option('prefix'), get_option('bindir'), 'pipewire-pulse'))
  )
  
- ln = find_program('ln')
+ executable('pipewire-avb',

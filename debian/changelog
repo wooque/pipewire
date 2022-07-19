@@ -1,6 +1,8 @@
 pipewire (0.3.56-1) UNRELEASED; urgency=medium
 
   * New upstream release
+  * Drop patches included in upstream release:
+      - 40552a0e: jack: only mix when we have input to mix
 
  -- Dylan Aïssi <daissi@debian.org>  Tue, 19 Jul 2022 22:07:56 +0200
 
