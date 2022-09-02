@@ -1,5 +1,5 @@
 project('pipewire', ['c' ],
-  version : '0.3.56',
+  version : '0.3.57',
   license : [ 'MIT', 'LGPL-2.1-or-later', 'GPL-2.0-only' ],
   meson_version : '>= 0.59.0',
   default_options : [ 'warning_level=3',
@@ -295,6 +295,11 @@ cdata.set('HAVE_LIBUSB', libusb_dep.found())
 cap_lib = dependency('libcap', required : false)
 cdata.set('HAVE_LIBCAP', cap_lib.found())
 
+glib2_dep = dependency('glib-2.0', required : get_option('flatpak'))
+summary({'GLib-2.0 (Flatpak support)': glib2_dep.found()}, bool_yn: true, section: 'Misc dependencies')
+flatpak_support = glib2_dep.found()
+cdata.set('HAVE_GLIB2', flatpak_support)
+
 gst_option = get_option('gstreamer')
 gst_deps_def = {
   'glib-2.0': {'version': '>=2.32.0'},
@@ -337,11 +342,11 @@ summary({'WebRTC Echo Canceling': webrtc_dep.found()}, bool_yn: true, section: '
 cdata.set('HAVE_WEBRTC', webrtc_dep.found())
 
 # On FreeBSD and MidnightBSD, epoll-shim library is required for eventfd() and timerfd()
-epoll_shim_dep = (build_machine.system() == 'freebsd' or build_machine.system() == 'midnightbsd'
+epoll_shim_dep = (host_machine.system() == 'freebsd' or host_machine.system() == 'midnightbsd'
     ? dependency('epoll-shim', required: true)
     : dependency('', required: false))
 
-libinotify_dep = (build_machine.system() == 'freebsd' or build_machine.system() == 'midnightbsd'
+libinotify_dep = (host_machine.system() == 'freebsd' or host_machine.system() == 'midnightbsd'
     ? dependency('libinotify', required: true)
     : dependency('', required: false))
 
@@ -356,7 +361,7 @@ need_alsa = get_option('pipewire-alsa').enabled() or 'media-session' in get_opti
 alsa_dep = dependency('alsa', version : '>=1.1.7', required: need_alsa)
 summary({'pipewire-alsa': alsa_dep.found()}, bool_yn: true)
 
-if build_machine.system() == 'freebsd' or build_machine.system() == 'midnightbsd'
+if host_machine.system() == 'freebsd' or host_machine.system() == 'midnightbsd'
 # On FreeBSD and MidnightBSD the OpenSSL library may come from base or a package.
 # Check for a package first and fallback to the base library if we can't find it via pkgconfig
     openssl_lib = dependency('openssl', required: false)

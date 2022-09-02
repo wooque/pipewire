@@ -281,8 +281,10 @@ static int do_negotiate(struct pw_impl_link *this)
 	/* find a common format for the ports */
 	if ((res = pw_context_find_format(context,
 					output, input, NULL, 0, NULL,
-					&format, &b, &error)) < 0)
+					&format, &b, &error)) < 0) {
+		format = NULL;
 		goto error;
+	}
 
 	format = spa_pod_copy(format);
 	spa_pod_fixate(format);
@@ -1262,7 +1264,7 @@ struct pw_impl_link *pw_context_create_link(struct pw_context *context,
 		impl->inode = input_node;
 	}
 
-	this->rt.target.signal = impl->inode->rt.target.signal;
+	this->rt.target.signal_func = impl->inode->rt.target.signal_func;
 	this->rt.target.data = impl->inode->rt.target.data;
 
 	pw_log_debug("%p: constructed out:%p:%d.%d -> in:%p:%d.%d", impl,

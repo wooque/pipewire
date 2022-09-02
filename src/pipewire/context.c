@@ -101,26 +101,6 @@ static void fill_properties(struct pw_context *context)
 	pw_properties_set(properties, PW_KEY_CORE_NAME, context->core->info.name);
 }
 
-static int try_load_conf(struct pw_context *this, const char *conf_prefix,
-		const char *conf_name, struct pw_properties *conf)
-{
-	int res;
-
-	if (conf_name == NULL)
-		return -EINVAL;
-	if (spa_streq(conf_name, "null"))
-		return 0;
-	if ((res = pw_conf_load_conf(conf_prefix, conf_name, conf)) < 0) {
-		bool skip_prefix = conf_prefix == NULL || conf_name[0] == '/';
-		pw_log_warn("%p: can't load config %s%s%s: %s",
-				this,
-				skip_prefix ? "" : conf_prefix,
-				skip_prefix ? "" : "/",
-				conf_name, spa_strerror(res));
-	}
-	return res;
-}
-
 static int context_set_freewheel(struct pw_context *context, bool freewheel)
 {
 	struct spa_thread *thr;
@@ -211,7 +191,7 @@ struct pw_context *pw_context_new(struct pw_loop *main_loop,
 {
 	struct impl *impl;
 	struct pw_context *this;
-	const char *lib, *str, *conf_prefix, *conf_name;
+	const char *lib, *str;
 	void *dbus_iface = NULL;
 	uint32_t n_support;
 	struct pw_properties *pr, *conf;
@@ -270,23 +250,8 @@ struct pw_context *pw_context_new(struct pw_loop *main_loop,
 		goto error_free;
 	}
 	this->conf = conf;
-
-	conf_prefix = getenv("PIPEWIRE_CONFIG_PREFIX");
-	if (conf_prefix == NULL)
-		conf_prefix = pw_properties_get(properties, PW_KEY_CONFIG_PREFIX);
-
-	conf_name = getenv("PIPEWIRE_CONFIG_NAME");
-	if (try_load_conf(this, conf_prefix, conf_name, conf) < 0) {
-		conf_name = pw_properties_get(properties, PW_KEY_CONFIG_NAME);
-		if (try_load_conf(this, conf_prefix, conf_name, conf) < 0) {
-			conf_name = "client.conf";
-			if ((res = try_load_conf(this, conf_prefix, conf_name, conf)) < 0) {
-				pw_log_error("%p: can't load config %s: %s",
-					this, conf_name, spa_strerror(res));
-				goto error_free;
-			}
-		}
-	}
+	if ((res = pw_conf_load_conf_for_context (properties, conf)) < 0)
+		goto error_free;
 
 	n_support = pw_get_support(this->support, SPA_N_ELEMENTS(this->support) - 6);
 	cpu = spa_support_find(this->support, n_support, SPA_TYPE_INTERFACE_CPU);
@@ -625,98 +590,6 @@ struct pw_global *pw_context_find_global(struct pw_context *context, uint32_t id
 		return NULL;
 	}
 	return global;
-}
-
-/** Find a port to link with
- *
- * \param context a context
- * \param other_port a port to find a link with
- * \param id the id of a port or PW_ID_ANY
- * \param props extra properties
- * \param n_format_filters number of filters
- * \param format_filters array of format filters
- * \param[out] error an error when something is wrong
- * \return a port that can be used to link to \a otherport or NULL on error
- */
-struct pw_impl_port *pw_context_find_port(struct pw_context *context,
-				  struct pw_impl_port *other_port,
-				  uint32_t id,
-				  struct pw_properties *props,
-				  uint32_t n_format_filters,
-				  struct spa_pod **format_filters,
-				  char **error)
-{
-	struct pw_impl_port *best = NULL;
-	bool have_id;
-	struct pw_impl_node *n;
-
-	have_id = id != PW_ID_ANY;
-
-	pw_log_debug("%p: id:%u", context, id);
-
-	spa_list_for_each(n, &context->node_list, link) {
-		if (n->global == NULL)
-			continue;
-
-		if (other_port->node == n)
-			continue;
-
-		if (!global_can_read(context, n->global))
-			continue;
-
-		pw_log_debug("%p: node id:%d", context, n->global->id);
-
-		if (have_id) {
-			if (n->global->id == id) {
-				pw_log_debug("%p: id:%u matches node %p", context, id, n);
-
-				best =
-				    pw_impl_node_find_port(n,
-						pw_direction_reverse(other_port->direction),
-						PW_ID_ANY);
-				if (best)
-					break;
-			}
-		} else {
-			struct pw_impl_port *p, *pin, *pout;
-			uint8_t buf[4096];
-			struct spa_pod_builder b = SPA_POD_BUILDER_INIT(buf, sizeof(buf));
-			struct spa_pod *dummy;
-
-			p = pw_impl_node_find_port(n,
-					pw_direction_reverse(other_port->direction),
-					PW_ID_ANY);
-			if (p == NULL)
-				continue;
-
-			if (p->direction == PW_DIRECTION_OUTPUT) {
-				pin = other_port;
-				pout = p;
-			} else {
-				pin = p;
-				pout = other_port;
-			}
-
-			if (pw_context_find_format(context,
-						pout,
-						pin,
-						props,
-						n_format_filters,
-						format_filters,
-						&dummy,
-						&b,
-						error) < 0) {
-				free(*error);
-				continue;
-			}
-			best = p;
-			break;
-		}
-	}
-	if (best == NULL) {
-		*error = spa_aprintf("No matching Node found");
-	}
-	return best;
 }
 
 SPA_PRINTF_FUNC(7, 8) int pw_context_debug_port_params(struct pw_context *this,
@@ -1382,6 +1255,9 @@ again:
 			 * panding change. Apply the change to the position now so
 			 * that we have the right values when we change the node
 			 * states of the driver and followers to RUNNING below */
+			pw_log_debug("%p: apply duration:%"PRIu64" rate:%u/%u", context,
+					n->current_quantum, n->current_rate.num,
+					n->current_rate.denom);
 			n->rt.position->clock.duration = n->current_quantum;
 			n->rt.position->clock.rate = n->current_rate;
 			n->current_pending = false;

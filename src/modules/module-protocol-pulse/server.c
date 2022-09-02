@@ -60,6 +60,7 @@
 #include "server.h"
 #include "stream.h"
 #include "utils.h"
+#include "flatpak-utils.h"
 
 #define LISTEN_BACKLOG 32
 #define MAX_CLIENTS 64
@@ -417,14 +418,47 @@ on_connect(void *data, int fd, uint32_t mask)
 		client_access = server->client_access;
 
 	if (server->addr.ss_family == AF_UNIX) {
+		char *app_id = NULL, *devices = NULL;
+
 #ifdef SO_PRIORITY
 		val = 6;
 		if (setsockopt(client_fd, SOL_SOCKET, SO_PRIORITY, &val, sizeof(val)) < 0)
 			pw_log_warn("setsockopt(SO_PRIORITY) failed: %m");
 #endif
 		pid = get_client_pid(client, client_fd);
-		if (pid != 0 && check_flatpak(client, pid) == 1)
+		if (pid != 0 && pw_check_flatpak(pid, &app_id, &devices) == 1) {
+			/*
+			 * XXX: we should really use Portal client access here
+			 *
+			 * However, session managers currently support only camera
+			 * permissions, and the XDG Portal doesn't have a "Sound Manager"
+			 * permission defined. So for now, use access=flatpak, and determine
+			 * extra permissions here.
+			 *
+			 * The application has access to the Pulseaudio socket,
+			 * and with real PA it would always then have full sound access.
+			 * We'll restrict the full access here behind devices=all;
+			 * if the application can access all devices it can then
+			 * also sound and camera devices directly, so granting also the
+			 * Manager permissions here is reasonable.
+			 *
+			 * The "Manager" permission in any case is also currently not safe
+			 * as the session manager does not check any permission store
+			 * for it.
+			 */
 			client_access = "flatpak";
+			pw_properties_set(client->props, "pipewire.access.portal.app_id",
+					app_id);
+
+			if (devices && (spa_streq(devices, "all") ||
+							spa_strstartswith(devices, "all;") ||
+							strstr(devices, ";all;")))
+				pw_properties_set(client->props, PW_KEY_MEDIA_CATEGORY, "Manager");
+			else
+				pw_properties_set(client->props, PW_KEY_MEDIA_CATEGORY, NULL);
+		}
+		free(devices);
+		free(app_id);
 	}
 	else if (server->addr.ss_family == AF_INET || server->addr.ss_family == AF_INET6) {
 

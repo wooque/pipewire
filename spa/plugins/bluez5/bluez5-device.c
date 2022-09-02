@@ -301,6 +301,8 @@ static void emit_info(struct impl *this, bool full);
 
 static float get_soft_volume_boost(struct node *node)
 {
+	const struct a2dp_codec *codec = node->transport ? node->transport->a2dp_codec : NULL;
+
 	/*
 	 * For A2DP duplex, the duplex microphone channel sometimes does not appear
 	 * to have hardware gain, and input volume is very low.
@@ -310,7 +312,8 @@ static float get_soft_volume_boost(struct node *node)
 	 * If this causes clipping, the user can just reduce the mic volume to
 	 * bring SW gain below 1.
 	 */
-	if (node->a2dp_duplex && node->transport &&
+	if (node->a2dp_duplex && node->transport && codec && codec->info &&
+			spa_atob(spa_dict_lookup(codec->info, "duplex.boost")) &&
 			node->id == DEVICE_ID_SOURCE &&
 			!node->transport->volumes[SPA_BT_VOLUME_ID_RX].active)
 		return 10.0f;	/* 20 dB boost */
@@ -912,7 +915,7 @@ static void profiles_changed(void *userdata, uint32_t prev_profiles, uint32_t pr
 	if (this->bt_dev->connected_profiles & SPA_BT_PROFILE_A2DP_SINK) {
 		free(this->supported_codecs);
 		this->supported_codecs = spa_bt_device_get_supported_a2dp_codecs(
-			this->bt_dev, &this->supported_codec_count);
+			this->bt_dev, &this->supported_codec_count, true);
 	}
 
 	switch (this->profile) {
@@ -1127,7 +1130,7 @@ static void set_initial_profile(struct impl *this)
 	if (this->supported_codecs)
 		free(this->supported_codecs);
 	this->supported_codecs = spa_bt_device_get_supported_a2dp_codecs(
-					this->bt_dev, &this->supported_codec_count);
+		this->bt_dev, &this->supported_codec_count, true);
 
 	/* Prefer A2DP, then HFP, then null, but select AG if the device
 	   appears not to have A2DP_SINK or any HEAD_UNIT profile */

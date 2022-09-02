@@ -200,6 +200,7 @@ static int make_matrix(struct channelmix *mix)
 				matrix[i][i]= 1.0f;
 		}
 		src_mask = dst_mask = ~0LU;
+		filter_fc = filter_lfe = true;
 		goto done;
 	} else {
 		spa_log_debug(mix->log, "matching channels");
@@ -398,6 +399,15 @@ static int make_matrix(struct channelmix *mix)
 	spa_log_debug(mix->log, "unassigned upmix %08"PRIx64" lfe:%f",
 			unassigned, mix->lfe_cutoff);
 
+	if (unassigned & STEREO) {
+		if ((src_mask & FRONT) == FRONT) {
+			spa_log_debug(mix->log, "produce STEREO from FC");
+			_MATRIX(FL,FC) += clev;
+			_MATRIX(FR,FC) += clev;
+		} else {
+			spa_log_warn(mix->log, "can't produce STEREO");
+		}
+	}
 	if (unassigned & FRONT) {
 		if ((src_mask & STEREO) == STEREO) {
 			spa_log_debug(mix->log, "produce FC from STEREO");
@@ -431,10 +441,13 @@ static int make_matrix(struct channelmix *mix)
 			spa_log_debug(mix->log, "produce SIDE from STEREO");
 			_MATRIX(SL,FL) += slev;
 			_MATRIX(SR,FR) += slev;
-		} else if ((src_mask & FRONT) == FRONT) {
+		} else if ((src_mask & FRONT) == FRONT &&
+			mix->upmix == CHANNELMIX_UPMIX_SIMPLE) {
 			spa_log_debug(mix->log, "produce SIDE from FC");
 			_MATRIX(SL,FC) += clev;
 			_MATRIX(SR,FC) += clev;
+		} else {
+			spa_log_debug(mix->log, "won't produce SIDE");
 		}
 	}
 	if (unassigned & REAR) {
@@ -446,10 +459,13 @@ static int make_matrix(struct channelmix *mix)
 			spa_log_debug(mix->log, "produce REAR from STEREO");
 			_MATRIX(RL,FL) += slev;
 			_MATRIX(RR,FR) += slev;
-		} else if ((src_mask & FRONT) == FRONT) {
+		} else if ((src_mask & FRONT) == FRONT &&
+			mix->upmix == CHANNELMIX_UPMIX_SIMPLE) {
 			spa_log_debug(mix->log, "produce REAR from FC");
 			_MATRIX(RL,FC) += clev;
 			_MATRIX(RR,FC) += clev;
+		} else {
+			spa_log_debug(mix->log, "won't produce SIDE");
 		}
 	}
 

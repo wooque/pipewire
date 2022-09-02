@@ -39,7 +39,9 @@
 #include <pwd.h>
 #endif
 #if defined(__FreeBSD__) || defined(__MidnightBSD__)
+#ifndef O_PATH
 #define O_PATH 0
+#endif
 #endif
 
 #include <spa/utils/result.h>
@@ -190,6 +192,9 @@ static int get_config_dir(char *path, size_t size, const char *prefix, const cha
 		return -ENOENT;
 	}
 
+	if (pw_check_option("no-config", "true"))
+		goto no_config;
+
 	if ((res = get_envconf_path(path, size, prefix, name)) != 0) {
 		if ((*level)++ == 0)
 			return res;
@@ -198,20 +203,18 @@ static int get_config_dir(char *path, size_t size, const char *prefix, const cha
 
 	if (*level == 0) {
 		(*level)++;
-		if ((res = get_confdata_path(path, size, prefix, name)) != 0)
+		if ((res = get_homeconf_path(path, size, prefix, name)) != 0)
 			return res;
 	}
-	if (pw_check_option("no-config", "true"))
-		return 0;
-
 	if (*level == 1) {
 		(*level)++;
 		if ((res = get_configdir_path(path, size, prefix, name)) != 0)
 			return res;
 	}
 	if (*level == 2) {
+no_config:
 		(*level)++;
-		if ((res = get_homeconf_path(path, size, prefix, name)) != 0)
+		if ((res = get_confdata_path(path, size, prefix, name)) != 0)
 			return res;
 	}
 	return 0;
@@ -405,12 +408,17 @@ static int conf_load(const char *path, struct pw_properties *conf)
 
 	if (fstat(fd, &sbuf) < 0)
 		goto error_close;
-	if ((data = mmap(NULL, sbuf.st_size, PROT_READ, MAP_PRIVATE, fd, 0)) == MAP_FAILED)
-		goto error_close;
-	close(fd);
 
-	count = pw_properties_update_string(conf, data, sbuf.st_size);
-	munmap(data, sbuf.st_size);
+	if (sbuf.st_size > 0) {
+		if ((data = mmap(NULL, sbuf.st_size, PROT_READ, MAP_PRIVATE, fd, 0)) == MAP_FAILED)
+			goto error_close;
+
+		count = pw_properties_update_string(conf, data, sbuf.st_size);
+		munmap(data, sbuf.st_size);
+	} else {
+		count = 0;
+	}
+	close(fd);
 
 	pw_log_info("%p: loaded config '%s' with %d items", conf, path, count);
 
@@ -423,13 +431,33 @@ error:
 	return -errno;
 }
 
+static bool check_override(struct pw_properties *conf, const char *name, int level)
+{
+	const struct spa_dict_item *it;
+
+	spa_dict_for_each(it, &conf->dict) {
+		int lev, idx;
+
+		if (!spa_streq(name, it->value))
+			continue;
+		if (sscanf(it->key, "override.%d.%d.config.name", &lev, &idx) != 2)
+			continue;
+		if (lev < level)
+			return false;
+	}
+	return true;
+}
+
 static void add_override(struct pw_properties *conf, struct pw_properties *override,
-		const char *path, int level, int index)
+		const char *path, const char *name, int level, int index)
 {
 	const struct spa_dict_item *it;
 	char key[1024];
+
 	snprintf(key, sizeof(key), "override.%d.%d.config.path", level, index);
 	pw_properties_set(conf, key, path);
+	snprintf(key, sizeof(key), "override.%d.%d.config.name", level, index);
+	pw_properties_set(conf, key, name);
 	spa_dict_for_each(it, &override->dict) {
 		snprintf(key, sizeof(key), "override.%d.%d.%s", level, index, it->key);
 		pw_properties_set(conf, key, it->value);
@@ -488,10 +516,16 @@ int pw_conf_load_conf(const char *prefix, const char *name, struct pw_properties
 			return -errno;
 
 		for (i = 0; i < n; i++) {
-			snprintf(fname, sizeof(fname), "%s/%s", path, entries[i]->d_name);
-			if (conf_load(fname, override) >= 0)
-				add_override(conf, override, fname, level, i);
-			pw_properties_clear(override);
+			const char *name = entries[i]->d_name;
+
+			snprintf(fname, sizeof(fname), "%s/%s", path, name);
+			if (check_override(conf, name, level)) {
+				if (conf_load(fname, override) >= 0)
+					add_override(conf, override, fname, name, level, i);
+				pw_properties_clear(override);
+			} else {
+				pw_log_info("skip override %s with lower priority", fname);
+			}
 			free(entries[i]);
 		}
 		free(entries);
@@ -889,6 +923,75 @@ static int update_props(void *user_data, const char *location, const char *key,
 	struct data *data = user_data;
 	data->count += pw_properties_update_string(data->props, val, len);
 	return 0;
+}
+
+static int try_load_conf(const char *conf_prefix, const char *conf_name,
+			 struct pw_properties *conf)
+{
+	int res;
+
+	if (conf_name == NULL)
+		return -EINVAL;
+	if (spa_streq(conf_name, "null"))
+		return 0;
+	if ((res = pw_conf_load_conf(conf_prefix, conf_name, conf)) < 0) {
+		bool skip_prefix = conf_prefix == NULL || conf_name[0] == '/';
+		pw_log_warn("can't load config %s%s%s: %s",
+				skip_prefix ? "" : conf_prefix,
+				skip_prefix ? "" : "/",
+				conf_name, spa_strerror(res));
+	}
+	return res;
+}
+
+SPA_EXPORT
+int pw_conf_load_conf_for_context(struct pw_properties *props, struct pw_properties *conf)
+{
+	const char *conf_prefix, *conf_name;
+	int res;
+
+	conf_prefix = getenv("PIPEWIRE_CONFIG_PREFIX");
+	if (conf_prefix == NULL)
+		conf_prefix = pw_properties_get(props, PW_KEY_CONFIG_PREFIX);
+
+	conf_name = getenv("PIPEWIRE_CONFIG_NAME");
+	if ((res = try_load_conf(conf_prefix, conf_name, conf)) < 0) {
+		conf_name = pw_properties_get(props, PW_KEY_CONFIG_NAME);
+		if ((res = try_load_conf(conf_prefix, conf_name, conf)) < 0) {
+			conf_name = "client.conf";
+			if ((res = try_load_conf(conf_prefix, conf_name, conf)) < 0) {
+				pw_log_error("can't load default config %s: %s",
+					conf_name, spa_strerror(res));
+				return res;
+			}
+		}
+	}
+
+	conf_name = pw_properties_get(props, PW_KEY_CONFIG_OVERRIDE_NAME);
+	if (conf_name != NULL) {
+		struct pw_properties *override;
+		const char *path, *name;
+
+		override = pw_properties_new(NULL, NULL);
+		if (override == NULL) {
+			res = -errno;
+			return res;
+		}
+
+		conf_prefix = pw_properties_get(props, PW_KEY_CONFIG_OVERRIDE_PREFIX);
+		if ((res = try_load_conf(conf_prefix, conf_name, override)) < 0) {
+			pw_log_error("can't load default override config %s: %s",
+				conf_name, spa_strerror(res));
+			pw_properties_free (override);
+			return res;
+		}
+		path = pw_properties_get(override, "config.path");
+		name = pw_properties_get(override, "config.name");
+		add_override(conf, override, path, name, 0, 1);
+		pw_properties_free(override);
+	}
+
+	return res;
 }
 
 SPA_EXPORT

@@ -62,7 +62,7 @@
 
 #define DEFAULT_RT_MAX	88
 
-#define JACK_CLIENT_NAME_SIZE		128
+#define JACK_CLIENT_NAME_SIZE		256
 #define JACK_PORT_NAME_SIZE		256
 #define JACK_PORT_TYPE_SIZE             32
 #define MONITOR_EXT			" Monitor"
@@ -800,7 +800,7 @@ void jack_get_version(int *major_ptr, int *minor_ptr, int *micro_ptr, int *proto
 	} else {						\
 		if (c->active)					\
 			(expr);					\
-		pw_log_debug("skip " #callback 			\
+		pw_log_debug("skip " #callback			\
 			" cb:%p active:%d", c->callback,	\
 			c->active);				\
 	}							\
@@ -817,6 +817,9 @@ void jack_get_version(int *major_ptr, int *minor_ptr, int *micro_ptr, int *proto
 			res = c->callback(__VA_ARGS__);		\
 			c->rt_locked = false;			\
 			pthread_mutex_unlock(&c->rt_lock);	\
+		} else {					\
+			pw_log_debug("skip " #callback		\
+				" cb:%p", c->callback);		\
 		}						\
 	}							\
 	res;							\
@@ -871,6 +874,8 @@ static int do_sync(struct client *client)
 		pw_log_warn("sync requested from callback");
 		return 0;
 	}
+	if (client->last_res == -EPIPE)
+		return -EPIPE;
 
 	client->last_res = 0;
 	client->pending_sync = pw_proxy_sync((struct pw_proxy*)client->core, client->pending_sync);
@@ -3279,7 +3284,7 @@ jack_client_t * jack_client_open (const char *client_name,
 			"jack.properties", client->props);
 
 	pw_context_conf_section_match_rules(client->context.context, "jack.rules",
-			&client->props->dict, execute_match, client);
+			&client->context.context->properties->dict, execute_match, client);
 
 	support = pw_context_get_support(client->context.context, &n_support);
 
@@ -3356,6 +3361,8 @@ jack_client_t * jack_client_open (const char *client_name,
 	}
 	if (pw_properties_get(client->props, PW_KEY_NODE_NAME) == NULL)
 		pw_properties_set(client->props, PW_KEY_NODE_NAME, client_name);
+	if (pw_properties_get(client->props, PW_KEY_NODE_GROUP) == NULL)
+		pw_properties_setf(client->props, PW_KEY_NODE_GROUP, "jack-%d", getpid());
 	if (pw_properties_get(client->props, PW_KEY_NODE_DESCRIPTION) == NULL)
 		pw_properties_set(client->props, PW_KEY_NODE_DESCRIPTION, client_name);
 	if (pw_properties_get(client->props, PW_KEY_MEDIA_TYPE) == NULL)
@@ -3492,6 +3499,8 @@ int jack_client_close (jack_client_t *client)
 
 	res = jack_deactivate(client);
 
+	clean_transport(c);
+
 	if (c->context.loop)
 		pw_thread_loop_stop(c->context.loop);
 
@@ -3577,8 +3586,9 @@ char *jack_get_internal_client_name (jack_client_t *client,
 SPA_EXPORT
 int jack_client_name_size (void)
 {
-	pw_log_trace("%d", JACK_CLIENT_NAME_SIZE);
-	return JACK_CLIENT_NAME_SIZE;
+	/* The JACK API specifies that this value includes the final NULL character. */
+	pw_log_trace("%d", JACK_CLIENT_NAME_SIZE+1);
+	return JACK_CLIENT_NAME_SIZE+1;
 }
 
 SPA_EXPORT
@@ -3765,12 +3775,12 @@ jack_native_thread_t jack_client_thread_id (jack_client_t *client)
 	struct client *c = (struct client *) client;
 	void *thr;
 
-	spa_return_val_if_fail(c != NULL, -EINVAL);
+	spa_return_val_if_fail(c != NULL, (pthread_t){0});
 
 	thr = pw_data_loop_get_thread(c->loop);
 	if (thr == NULL)
 		return pthread_self();
-	return *(pthread_t*)thr;
+	return (pthread_t) thr;
 }
 
 SPA_EXPORT
