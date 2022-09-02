@@ -5,6 +5,7 @@ pipewire (0.3.57-1) UNRELEASED; urgency=medium
       - aaa015d0: avb: fix compilation on big endian
       - 1a5ec445: avb: fix compilation on big endian
       - f857fd46: avb: fix compilation on big endian
+  * Don't install filter-chain.service for now.
 
  -- Dylan Aïssi <daissi@debian.org>  Fri, 02 Sep 2022 21:38:56 +0200
 

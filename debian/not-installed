@@ -1,3 +1,4 @@
+usr/lib/systemd/user/filter-chain.service
 usr/share/pipewire/filter-chain.conf
 usr/share/pipewire/filter-chain/demonic.conf
 usr/share/pipewire/filter-chain/duplicate-FL.conf
