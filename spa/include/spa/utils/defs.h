@@ -147,6 +147,12 @@ struct spa_fraction {
 	SPA_MIN(SPA_MAX(_v, _low), _high);		\
 })
 
+#define SPA_CLAMPF(v,low,high)				\
+({							\
+	fminf(fmaxf(v, low), high);			\
+})
+
+
 #define SPA_SWAP(a,b)					\
 ({							\
 	__typeof__(a) _t = (a);				\
@@ -209,6 +215,7 @@ struct spa_fraction {
 #define SPA_SENTINEL __attribute__((__sentinel__))
 #define SPA_UNUSED __attribute__ ((unused))
 #define SPA_NORETURN __attribute__ ((noreturn))
+#define SPA_WARN_UNUSED_RESULT __attribute__ ((warn_unused_result))
 #else
 #define SPA_PRINTF_FUNC(fmt, arg1)
 #define SPA_FORMAT_ARG_FUNC(arg1)
@@ -218,6 +225,7 @@ struct spa_fraction {
 #define SPA_SENTINEL
 #define SPA_UNUSED
 #define SPA_NORETURN
+#define SPA_WARN_UNUSED_RESULT
 #endif
 
 #if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 199901L

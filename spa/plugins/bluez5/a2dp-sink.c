@@ -137,6 +137,8 @@ struct impl {
 	unsigned int started:1;
 	unsigned int following:1;
 
+	unsigned int is_duplex:1;
+
 	struct spa_source source;
 	int timerfd;
 	struct spa_source flush_source;
@@ -908,7 +910,8 @@ static int do_start(struct impl *this)
 	for (i = 0; i < size; i++)
 		spa_log_debug(this->log, "  %d: %02x", i, conf[i]);
 
-	this->codec_data = this->codec->init(this->codec, 0,
+	this->codec_data = this->codec->init(this->codec,
+			this->is_duplex ? A2DP_CODEC_FLAG_SINK : 0,
 			this->transport->configuration,
 			this->transport->configuration_len,
 			&port->current_format,
@@ -1195,6 +1198,7 @@ impl_node_port_enum_params(void *object, int seq,
 			return -EIO;
 
 		if ((res = this->codec->enum_config(this->codec,
+					this->is_duplex ? A2DP_CODEC_FLAG_SINK : 0,
 					this->transport->configuration,
 					this->transport->configuration_len,
 					id, result.index, &b, &param)) != 1)
@@ -1457,8 +1461,8 @@ static int impl_node_process(void *object)
 	spa_return_val_if_fail(this != NULL, -EINVAL);
 
 	port = &this->port;
-	io = port->io;
-	spa_return_val_if_fail(io != NULL, -EIO);
+	if ((io = port->io) == NULL)
+		return -EIO;
 
 	if (this->position && this->position->clock.flags & SPA_IO_CLOCK_FLAG_FREEWHEEL) {
 		io->status = SPA_STATUS_NEED_DATA;
@@ -1697,6 +1701,9 @@ impl_init(const struct spa_handle_factory *factory,
 
 	spa_list_init(&port->ready);
 
+	if (info && (str = spa_dict_lookup(info, "api.bluez5.a2dp-duplex")) != NULL)
+		this->is_duplex = spa_atob(str);
+
 	if (info && (str = spa_dict_lookup(info, SPA_KEY_API_BLUEZ5_TRANSPORT)))
 		sscanf(str, "pointer:%p", &this->transport);
 
@@ -1708,9 +1715,20 @@ impl_init(const struct spa_handle_factory *factory,
 		spa_log_error(this->log, "a transport codec is needed");
 		return -EINVAL;
 	}
+
 	this->codec = this->transport->a2dp_codec;
+
+	if (this->is_duplex) {
+		if (!this->codec->duplex_codec) {
+			spa_log_error(this->log, "transport codec doesn't support duplex");
+			return -EINVAL;
+		}
+		this->codec = this->codec->duplex_codec;
+	}
+
 	if (this->codec->init_props != NULL)
 		this->codec_props = this->codec->init_props(this->codec,
+					this->is_duplex ? A2DP_CODEC_FLAG_SINK : 0,
 					this->transport->device->settings);
 
 	reset_props(this, &this->props);

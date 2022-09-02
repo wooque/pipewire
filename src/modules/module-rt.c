@@ -153,6 +153,11 @@ static const struct spa_dict_item module_props[] = {
 #ifdef HAVE_DBUS
 #define RTKIT_SERVICE_NAME "org.freedesktop.RealtimeKit1"
 #define RTKIT_OBJECT_PATH "/org/freedesktop/RealtimeKit1"
+#define RTKIT_INTERFACE "org.freedesktop.RealtimeKit1"
+
+#define XDG_PORTAL_SERVICE_NAME "org.freedesktop.portal.Desktop"
+#define XDG_PORTAL_OBJECT_PATH "/org/freedesktop/portal/desktop"
+#define XDG_PORTAL_INTERFACE "org.freedesktop.portal.Realtime"
 
 /** \cond */
 struct pw_rtkit_bus {
@@ -184,7 +189,11 @@ struct impl {
 
 #ifdef HAVE_DBUS
 	bool use_rtkit;
-	struct pw_rtkit_bus *system_bus;
+	/* For D-Bus. These are const static. */
+	const char* service_name;
+	const char* object_path;
+	const char* interface;
+	struct pw_rtkit_bus *rtkit_bus;
 
 	/* These are only for the RTKit implementation to fill in the `thread`
 	 * struct. Since there's barely any overhead here we'll do this
@@ -215,7 +224,7 @@ static pid_t _gettid(void)
 }
 
 #ifdef HAVE_DBUS
-struct pw_rtkit_bus *pw_rtkit_bus_get_system(void)
+struct pw_rtkit_bus *pw_rtkit_bus_get(DBusBusType bus_type)
 {
 	struct pw_rtkit_bus *bus;
 	DBusError error;
@@ -231,7 +240,7 @@ struct pw_rtkit_bus *pw_rtkit_bus_get_system(void)
 	if (bus == NULL)
 		return NULL;
 
-	bus->bus = dbus_bus_get_private(DBUS_BUS_SYSTEM, &error);
+	bus->bus = dbus_bus_get_private(bus_type, &error);
 	if (bus->bus == NULL)
 		goto error;
 
@@ -241,10 +250,39 @@ struct pw_rtkit_bus *pw_rtkit_bus_get_system(void)
 
 error:
 	free(bus);
-	pw_log_error("Failed to connect to system bus: %s", error.message);
+	pw_log_error("Failed to connect to %s bus: %s",
+		     bus_type == DBUS_BUS_SYSTEM ? "system" : "session", error.message);
 	dbus_error_free(&error);
 	errno = ECONNREFUSED;
 	return NULL;
+}
+
+struct pw_rtkit_bus *pw_rtkit_bus_get_system(void)
+{
+	return pw_rtkit_bus_get(DBUS_BUS_SYSTEM);
+}
+
+struct pw_rtkit_bus *pw_rtkit_bus_get_session(void)
+{
+	return pw_rtkit_bus_get(DBUS_BUS_SESSION);
+}
+
+bool pw_rtkit_check_xdg_portal(struct pw_rtkit_bus *system_bus)
+{
+	DBusError error;
+        bool ret = true;
+
+	dbus_error_init(&error);
+
+	if (!dbus_bus_name_has_owner(system_bus->bus, XDG_PORTAL_SERVICE_NAME, &error)) {
+		pw_log_warn("Can't find xdg-portal: %s", error.name);
+		ret = false;
+		goto finish;
+	}
+finish:
+	dbus_error_free(&error);
+
+	return ret;
 }
 
 void pw_rtkit_bus_free(struct pw_rtkit_bus *system_bus)
@@ -270,7 +308,7 @@ static int translate_error(const char *name)
 	return -EIO;
 }
 
-static long long rtkit_get_int_property(struct pw_rtkit_bus *connection, const char *propname,
+static long long rtkit_get_int_property(struct impl *impl, const char *propname,
 					long long *propval)
 {
 	DBusMessage *m = NULL, *r = NULL;
@@ -280,19 +318,19 @@ static long long rtkit_get_int_property(struct pw_rtkit_bus *connection, const c
 	DBusError error;
 	int current_type;
 	long long ret;
-	const char *interfacestr = "org.freedesktop.RealtimeKit1";
+	struct pw_rtkit_bus *connection = impl->rtkit_bus;
 
 	dbus_error_init(&error);
 
-	if (!(m = dbus_message_new_method_call(RTKIT_SERVICE_NAME,
-					       RTKIT_OBJECT_PATH,
+	if (!(m = dbus_message_new_method_call(impl->service_name,
+					       impl->object_path,
 					       "org.freedesktop.DBus.Properties", "Get"))) {
 		ret = -ENOMEM;
 		goto finish;
 	}
 
 	if (!dbus_message_append_args(m,
-				      DBUS_TYPE_STRING, &interfacestr,
+				      DBUS_TYPE_STRING, &impl->interface,
 				      DBUS_TYPE_STRING, &propname, DBUS_TYPE_INVALID)) {
 		ret = -ENOMEM;
 		goto finish;
@@ -349,60 +387,63 @@ finish:
 	return ret;
 }
 
-int pw_rtkit_get_max_realtime_priority(struct pw_rtkit_bus *connection)
+int pw_rtkit_get_max_realtime_priority(struct impl *impl)
 {
 	long long retval;
 	int err;
 
-	err = rtkit_get_int_property(connection, "MaxRealtimePriority", &retval);
+	err = rtkit_get_int_property(impl, "MaxRealtimePriority", &retval);
 	return err < 0 ? err : retval;
 }
 
-int pw_rtkit_get_min_nice_level(struct pw_rtkit_bus *connection, int *min_nice_level)
+int pw_rtkit_get_min_nice_level(struct impl *impl, int *min_nice_level)
 {
 	long long retval;
 	int err;
 
-	err = rtkit_get_int_property(connection, "MinNiceLevel", &retval);
+	err = rtkit_get_int_property(impl, "MinNiceLevel", &retval);
 	if (err >= 0)
 		*min_nice_level = retval;
 	return err;
 }
 
-long long pw_rtkit_get_rttime_usec_max(struct pw_rtkit_bus *connection)
+long long pw_rtkit_get_rttime_usec_max(struct impl *impl)
 {
 	long long retval;
 	int err;
 
-	err = rtkit_get_int_property(connection, "RTTimeUSecMax", &retval);
+	err = rtkit_get_int_property(impl, "RTTimeUSecMax", &retval);
 	return err < 0 ? err : retval;
 }
 
-int pw_rtkit_make_realtime(struct pw_rtkit_bus *connection, pid_t thread, int priority)
+int pw_rtkit_make_realtime(struct impl *impl, pid_t thread, int priority)
 {
 	DBusMessage *m = NULL, *r = NULL;
+	dbus_uint64_t pid;
 	dbus_uint64_t u64;
 	dbus_uint32_t u32;
 	DBusError error;
 	int ret;
+	struct pw_rtkit_bus *connection = impl->rtkit_bus;
 
 	dbus_error_init(&error);
 
 	if (thread == 0)
 		thread = _gettid();
 
-	if (!(m = dbus_message_new_method_call(RTKIT_SERVICE_NAME,
-					       RTKIT_OBJECT_PATH,
-					       "org.freedesktop.RealtimeKit1",
-					       "MakeThreadRealtime"))) {
+	if (!(m = dbus_message_new_method_call(impl->service_name,
+					       impl->object_path, impl->interface,
+					       "MakeThreadRealtimeWithPID"))) {
 		ret = -ENOMEM;
 		goto finish;
 	}
 
+	pid = (dbus_uint64_t) getpid();
 	u64 = (dbus_uint64_t) thread;
 	u32 = (dbus_uint32_t) priority;
 
 	if (!dbus_message_append_args(m,
+				      DBUS_TYPE_UINT64, &pid,
 				      DBUS_TYPE_UINT64, &u64,
 				      DBUS_TYPE_UINT32, &u32, DBUS_TYPE_INVALID)) {
 		ret = -ENOMEM;
@@ -435,31 +476,34 @@ finish:
 	return ret;
 }
 
-int pw_rtkit_make_high_priority(struct pw_rtkit_bus *connection, pid_t thread, int nice_level)
+int pw_rtkit_make_high_priority(struct impl *impl, pid_t thread, int nice_level)
 {
 	DBusMessage *m = NULL, *r = NULL;
+	dbus_uint64_t pid;
 	dbus_uint64_t u64;
 	dbus_int32_t s32;
 	DBusError error;
 	int ret;
+	struct pw_rtkit_bus *connection = impl->rtkit_bus;
 
 	dbus_error_init(&error);
 
 	if (thread == 0)
 		thread = _gettid();
 
-	if (!(m = dbus_message_new_method_call(RTKIT_SERVICE_NAME,
-					       RTKIT_OBJECT_PATH,
-					       "org.freedesktop.RealtimeKit1",
-					       "MakeThreadHighPriority"))) {
+	if (!(m = dbus_message_new_method_call(impl->service_name,
+					       impl->object_path, impl->interface,
+					       "MakeThreadHighPriorityWithPID"))) {
 		ret = -ENOMEM;
 		goto finish;
 	}
 
+	pid = (dbus_uint64_t) getpid();
 	u64 = (dbus_uint64_t) thread;
 	s32 = (dbus_int32_t) nice_level;
 
 	if (!dbus_message_append_args(m,
+				      DBUS_TYPE_UINT64, &pid,
 				      DBUS_TYPE_UINT64, &u64,
 				      DBUS_TYPE_INT32, &s32, DBUS_TYPE_INVALID)) {
 		ret = -ENOMEM;
@@ -502,8 +546,8 @@ static void module_destroy(void *data)
 	spa_hook_remove(&impl->module_listener);
 
 #ifdef HAVE_DBUS
-	if (impl->system_bus)
-		pw_rtkit_bus_free(impl->system_bus);
+	if (impl->rtkit_bus)
+		pw_rtkit_bus_free(impl->rtkit_bus);
 #endif
 
 	free(impl);
@@ -560,13 +604,13 @@ static int sched_set_nice(int nice_level)
 		return -errno;
 }
 
-static int set_nice(struct impl *impl, int nice_level)
+static int set_nice(struct impl *impl, int nice_level, bool warn)
 {
 	int res = 0;
 
 #ifdef HAVE_DBUS
 	if (impl->use_rtkit)
-		res = pw_rtkit_make_high_priority(impl->system_bus, 0, nice_level);
+		res = pw_rtkit_make_high_priority(impl, 0, nice_level);
 	else
 		res = sched_set_nice(nice_level);
 #else
@@ -574,13 +618,13 @@ static int set_nice(struct impl *impl, int nice_level)
 #endif
 
 	if (res < 0) {
-		pw_log_warn("could not set nice-level to %d: %s",
-				nice_level, spa_strerror(res));
+		if (warn)
+			pw_log_warn("could not set nice-level to %d: %s",
+					nice_level, spa_strerror(res));
 	} else {
 		pw_log_info("main thread nice level set to %d",
 				nice_level);
 	}
-
 	return res;
 }
 
@@ -596,7 +640,7 @@ static int set_rlimit(struct impl *impl)
 #ifdef HAVE_DBUS
 	if (impl->use_rtkit) {
 		long long rttime;
-		rttime = pw_rtkit_get_rttime_usec_max(impl->system_bus);
+		rttime = pw_rtkit_get_rttime_usec_max(impl);
 		if (rttime >= 0) {
 			if ((rlim_t)rttime < rl.rlim_cur) {
 				pw_log_debug("clamping rt.time.soft from %llu to %lld because of RTKit",
@@ -741,7 +785,7 @@ static int impl_get_rt_range(void *object, const struct spa_dict *props,
 		if (min)
 			*min = 1;
 		if (max)
-			*max = pw_rtkit_get_max_realtime_priority(impl->system_bus);
+			*max = pw_rtkit_get_max_realtime_priority(impl);
 	} else {
 		if (min)
 			*min = sched_get_priority_min(REALTIME_POLICY);
@@ -782,7 +826,7 @@ static int impl_acquire_rt(void *object, struct spa_thread *thread, int priority
 
 	if (impl->use_rtkit) {
 		pid = impl_gettid(impl, pt);
-		rtprio_limit = pw_rtkit_get_max_realtime_priority(impl->system_bus);
+		rtprio_limit = pw_rtkit_get_max_realtime_priority(impl);
 		if (rtprio_limit >= 0 && rtprio_limit < priority) {
 			pw_log_info("dropping requested priority %d for thread %d down to %d because of RTKit limits", priority, pid, rtprio_limit);
 			priority = rtprio_limit;
@@ -795,7 +839,7 @@ static int impl_acquire_rt(void *object, struct spa_thread *thread, int priority
 			pw_log_debug("SCHED_OTHER|SCHED_RESET_ON_FORK worked.");
 		}
 
-		if ((err = pw_rtkit_make_realtime(impl->system_bus, pid, priority)) < 0) {
+		if ((err = pw_rtkit_make_realtime(impl, pid, priority)) < 0) {
 			pw_log_warn("could not make thread %d realtime using RTKit: %s", pid, spa_strerror(err));
 			return err;
 		}
@@ -863,31 +907,17 @@ static const struct spa_thread_utils_methods impl_thread_utils = {
 
 
 #ifdef HAVE_DBUS
-static int should_use_rtkit(struct impl *impl, struct pw_context *context, bool *use_rtkit)
+static int check_rtkit(struct impl *impl, struct pw_context *context, bool *can_use_rtkit)
 {
 	const struct pw_properties *context_props;
 	const char *str;
 
-	*use_rtkit = true;
+	*can_use_rtkit = true;
 
 	if ((context_props = pw_context_get_properties(context)) != NULL &&
 	    (str = pw_properties_get(context_props, "support.dbus")) != NULL &&
 	    !pw_properties_parse_bool(str))
-		*use_rtkit = false;
-
-	/* If the user has permissions to use regular realtime scheduling, then
-	 * we'll use that instead of RTKit */
-	if (check_realtime_privileges(impl->rt_prio)) {
-		*use_rtkit = false;
-	} else {
-		if (!(*use_rtkit)) {
-			pw_log_warn("neither regular realtime scheduling nor RTKit are available");
-			return -ENOTSUP;
-		}
-
-		/* TODO: Should this be pw_log_warn or pw_log_debug instead? */
-		pw_log_info("could not use realtime scheduling, falling back to using RTKit instead");
-	}
+		*can_use_rtkit = false;
 
 	return 0;
 }
@@ -921,34 +951,67 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	impl->rt_time_soft = pw_properties_get_int32(props, "rt.time.soft", DEFAULT_RT_TIME_SOFT);
 	impl->rt_time_hard = pw_properties_get_int32(props, "rt.time.hard", DEFAULT_RT_TIME_HARD);
 
+	bool can_use_rtkit = false, use_rtkit = false;
+
 #ifdef HAVE_DBUS
 	spa_list_init(&impl->threads_list);
 	pthread_mutex_init(&impl->lock, NULL);
 	pthread_cond_init(&impl->cond, NULL);
 
-	if ((res = should_use_rtkit(impl, context, &impl->use_rtkit)) < 0) {
+	if ((res = check_rtkit(impl, context, &can_use_rtkit)) < 0)
 		goto error;
-	}
-
-	if (impl->use_rtkit) {
-		impl->system_bus = pw_rtkit_bus_get_system();
-		if (impl->system_bus == NULL) {
-			res = -errno;
-			pw_log_warn("could not get system bus: %m");
+#endif
+	/* If the user has permissions to use regular realtime scheduling, as well as
+	 * the nice level we want, then we'll use that instead of RTKit */
+	if (!check_realtime_privileges(impl->rt_prio)) {
+		if (!can_use_rtkit) {
+			res = -ENOTSUP;
+			pw_log_warn("regular realtime scheduling not available (RTKit fallback disabled)");
 			goto error;
 		}
+		use_rtkit = true;
 	}
-#else
-	if (!check_realtime_privileges(impl->rt_prio)) {
-		res = -ENOTSUP;
-		pw_log_warn("regular realtime scheduling not available (RTKit fallback disabled)");
-		goto error;
+
+	if (IS_VALID_NICE_LEVEL(impl->nice_level)) {
+		if (set_nice(impl, impl->nice_level, !can_use_rtkit) < 0)
+			use_rtkit = can_use_rtkit;
+	}
+	set_rlimit(impl);
+
+#ifdef HAVE_DBUS
+	impl->use_rtkit = use_rtkit;
+	if (impl->use_rtkit) {
+		/* Checking xdg-desktop-portal. It works fine in all situations. */
+		impl->rtkit_bus = pw_rtkit_bus_get_session();
+		if (impl->rtkit_bus != NULL) {
+			if (pw_rtkit_check_xdg_portal(impl->rtkit_bus)) {
+				impl->service_name = XDG_PORTAL_SERVICE_NAME;
+				impl->object_path = XDG_PORTAL_OBJECT_PATH;
+				impl->interface = XDG_PORTAL_INTERFACE;
+			} else {
+				pw_log_warn("found session bus but no portal");
+				pw_rtkit_bus_free(impl->rtkit_bus);
+				impl->rtkit_bus = NULL;
+			}
+		}
+		/* Failed to get xdg-desktop-portal, try to use rtkit. */
+		if (impl->rtkit_bus == NULL) {
+			impl->rtkit_bus = pw_rtkit_bus_get_system();
+			if (impl->rtkit_bus != NULL) {
+				impl->service_name = RTKIT_SERVICE_NAME;
+				impl->object_path = RTKIT_OBJECT_PATH;
+				impl->interface = RTKIT_INTERFACE;
+			} else {
+				res = -errno;
+				pw_log_warn("could not get system bus: %m");
+				goto error;
+			}
+		}
+		/* Retry set_nice with rtkit */
+		if (IS_VALID_NICE_LEVEL(impl->nice_level))
+			set_nice(impl, impl->nice_level, true);
 	}
 #endif
-
-	if (IS_VALID_NICE_LEVEL(impl->nice_level))
-		set_nice(impl, impl->nice_level);
-	set_rlimit(impl);
 
 	impl->thread_utils.iface = SPA_INTERFACE_INIT(
 			SPA_TYPE_INTERFACE_ThreadUtils,
@@ -977,8 +1040,8 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 
 error:
 #ifdef HAVE_DBUS
-	if (impl->system_bus)
-		pw_rtkit_bus_free(impl->system_bus);
+	if (impl->rtkit_bus)
+		pw_rtkit_bus_free(impl->rtkit_bus);
 #endif
 	free(impl);
 done:

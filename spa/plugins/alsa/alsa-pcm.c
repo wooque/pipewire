@@ -10,6 +10,7 @@
 
 #include <spa/pod/filter.h>
 #include <spa/utils/string.h>
+#include <spa/utils/result.h>
 #include <spa/support/system.h>
 #include <spa/utils/keys.h>
 
@@ -442,9 +443,31 @@ int spa_alsa_parse_prop_params(struct state *state, struct spa_pod *params)
 	return changed;
 }
 
+#define CHECK(s,msg,...) if ((err = (s)) < 0) { spa_log_error(state->log, msg ": %s", ##__VA_ARGS__, snd_strerror(err)); return err; }
+
+static ssize_t log_write(void *cookie, const char *buf, size_t size)
+{
+	struct state *state = cookie;
+	int len;
+
+	while (size > 0) {
+		len = strcspn(buf, "\n");
+		if (len > 0)
+			spa_log_debug(state->log, "%.*s", (int)len, buf);
+		buf += len + 1;
+		size -= len + 1;
+	}
+	return size;
+}
+
+static cookie_io_functions_t io_funcs = {
+	.write = log_write,
+};
+
 int spa_alsa_init(struct state *state, const struct spa_dict *info)
 {
 	uint32_t i;
+	int err;
 
 	snd_config_update_free_global();
 
@@ -481,20 +504,31 @@ int spa_alsa_init(struct state *state, const struct spa_dict *info)
 		spa_log_error(state->log, "can't create card %u", state->card_index);
 		return -errno;
 	}
+	state->log_file = fopencookie(state, "w", io_funcs);
+	if (state->log_file == NULL) {
+		spa_log_error(state->log, "can't create log file");
+		return -errno;
+	}
+	CHECK(snd_output_stdio_attach(&state->output, state->log_file, 0), "attach failed");
+
 	return 0;
 }
 
 int spa_alsa_clear(struct state *state)
 {
+	int err;
+
 	release_card(state->card);
 
 	state->card = NULL;
 	state->card_index = SPA_ID_INVALID;
 
-	return 0;
-}
+	if ((err = snd_output_close(state->output)) < 0)
+		spa_log_warn(state->log, "output close failed: %s", snd_strerror(err));
+	fclose(state->log_file);
 
-#define CHECK(s,msg,...) if ((err = (s)) < 0) { spa_log_error(state->log, msg ": %s", ##__VA_ARGS__, snd_strerror(err)); return err; }
+	return err;
+}
 
 int spa_alsa_open(struct state *state, const char *params)
 {
@@ -504,8 +538,6 @@ int spa_alsa_open(struct state *state, const char *params)
 
 	if (state->opened)
 		return 0;
-
-	CHECK(snd_output_stdio_attach(&state->output, stderr, 0), "attach failed");
 
 	spa_scnprintf(device_name, sizeof(device_name), "%s%s%s",
 			state->card->ucm_prefix ? state->card->ucm_prefix : "",
@@ -538,6 +570,8 @@ int spa_alsa_open(struct state *state, const char *params)
 	return 0;
 
 error_exit_close:
+	spa_log_info(state->log, "%p: Device '%s' closing: %s", state, state->props.device,
+			spa_strerror(err));
 	snd_pcm_close(state->hndl);
 	return err;
 }
@@ -555,9 +589,6 @@ int spa_alsa_close(struct state *state)
 	if ((err = snd_pcm_close(state->hndl)) < 0)
 		spa_log_warn(state->log, "%s: close failed: %s", state->props.device,
 				snd_strerror(err));
-
-	if ((err = snd_output_close(state->output)) < 0)
-		spa_log_warn(state->log, "output close failed: %s", snd_strerror(err));
 
 	spa_system_close(state->data_system, state->timerfd);
 
@@ -763,6 +794,9 @@ static int add_rate(struct state *state, uint32_t scale, bool all, uint32_t inde
 	CHECK(snd_pcm_hw_params_get_rate_min(params, &min, &dir), "get_rate_min");
 	CHECK(snd_pcm_hw_params_get_rate_max(params, &max, &dir), "get_rate_max");
 
+	spa_log_debug(state->log, "min:%u max:%u min-allowed:%u scale:%u all:%d",
+			min, max, min_allowed_rate, scale, all);
+
 	min_allowed_rate /= scale;
 	min = SPA_MAX(min_allowed_rate, min);
 
@@ -781,6 +815,9 @@ static int add_rate(struct state *state, uint32_t scale, bool all, uint32_t inde
 		rate = state->position ? state->position->clock.rate.denom : DEFAULT_RATE;
 
 	rate = SPA_CLAMP(rate, min, max);
+
+	spa_log_debug(state->log, "rate:%u multi:%d card:%d def:%d",
+			rate, state->multi_rate, state->card->rate, state->default_rate);
 
 	spa_pod_builder_prop(b, SPA_FORMAT_AUDIO_rate, 0);
 
@@ -833,7 +870,8 @@ static int add_channels(struct state *state, bool all, uint32_t index, uint32_t 
 
 	CHECK(snd_pcm_hw_params_get_channels_min(params, &min), "get_channels_min");
 	CHECK(snd_pcm_hw_params_get_channels_max(params, &max), "get_channels_max");
-	spa_log_debug(state->log, "channels (%d %d)", min, max);
+	spa_log_debug(state->log, "channels (%d %d) default:%d all:%d",
+			min, max, state->default_channels, all);
 
 	if (state->default_channels != 0 && !all) {
 		if (min < state->default_channels)
@@ -914,6 +952,14 @@ skip_channels:
 	return 1;
 }
 
+static void debug_hw_params(struct state *state, const char *prefix, snd_pcm_hw_params_t *params)
+{
+	if (SPA_UNLIKELY(spa_log_level_topic_enabled(state->log, SPA_LOG_TOPIC_DEFAULT, SPA_LOG_LEVEL_DEBUG))) {
+		spa_log_debug(state->log, "%s:", prefix);
+		snd_pcm_hw_params_dump(params, state->output);
+		fflush(state->log_file);
+	}
+}
 static int enum_pcm_formats(struct state *state, uint32_t index, uint32_t *next,
 		struct spa_pod **result, struct spa_pod_builder *b)
 {
@@ -930,6 +976,8 @@ static int enum_pcm_formats(struct state *state, uint32_t index, uint32_t *next,
 	hndl = state->hndl;
 	snd_pcm_hw_params_alloca(&params);
 	CHECK(snd_pcm_hw_params_any(hndl, params), "Broken configuration: no configurations available");
+
+	debug_hw_params(state, __func__, params);
 
 	CHECK(snd_pcm_hw_params_set_rate_resample(hndl, params, 0), "set_rate_resample");
 
@@ -1077,6 +1125,8 @@ static int enum_iec958_formats(struct state *state, uint32_t index, uint32_t *ne
 	snd_pcm_hw_params_alloca(&params);
 	CHECK(snd_pcm_hw_params_any(hndl, params), "Broken configuration: no configurations available");
 
+	debug_hw_params(state, __func__, params);
+
 	CHECK(snd_pcm_hw_params_set_rate_resample(hndl, params, 0), "set_rate_resample");
 
 	spa_pod_builder_push_object(b, &f[0], SPA_TYPE_OBJECT_Format, SPA_PARAM_EnumFormat);
@@ -1138,6 +1188,8 @@ static int enum_dsd_formats(struct state *state, uint32_t index, uint32_t *next,
 	snd_pcm_hw_params_alloca(&params);
 	CHECK(snd_pcm_hw_params_any(hndl, params), "Broken configuration: no configurations available");
 
+	debug_hw_params(state, __func__, params);
+
 	snd_pcm_format_mask_alloca(&fmask);
 	snd_pcm_hw_params_get_format_mask(params, fmask);
 
@@ -1197,7 +1249,12 @@ spa_alsa_enum_format(struct state *state, int seq, uint32_t start, uint32_t num,
 	struct spa_result_node_params result;
 	uint32_t count = 0;
 
+	spa_log_debug(state->log, "opened:%d format:%d started:%d", state->opened,
+			state->have_format, state->started);
+
 	opened = state->opened;
+	if (!state->started && state->have_format)
+		spa_alsa_close(state);
 	if ((err = spa_alsa_open(state, NULL)) < 0)
 		return err;
 
@@ -1257,6 +1314,9 @@ int spa_alsa_set_format(struct state *state, struct spa_audio_info *fmt, uint32_
 	unsigned int periods;
 	bool match = true, planar = false, is_batch;
 	char spdif_params[128] = "";
+
+	spa_log_debug(state->log, "opened:%d format:%d started:%d", state->opened,
+			state->have_format, state->started);
 
 	state->use_mmap = !state->disable_mmap;
 
@@ -1370,6 +1430,8 @@ int spa_alsa_set_format(struct state *state, struct spa_audio_info *fmt, uint32_
 		return -EINVAL;
 	}
 
+	if (!state->started && state->have_format)
+		spa_alsa_close(state);
 	if ((err = spa_alsa_open(state, spdif_params)) < 0)
 		return err;
 
@@ -1378,6 +1440,9 @@ int spa_alsa_set_format(struct state *state, struct spa_audio_info *fmt, uint32_
 	snd_pcm_hw_params_alloca(&params);
 	/* choose all parameters */
 	CHECK(snd_pcm_hw_params_any(hndl, params), "Broken configuration for playback: no configurations available");
+
+	debug_hw_params(state, __func__, params);
+
 	/* set hardware resampling, no resample */
 	CHECK(snd_pcm_hw_params_set_rate_resample(hndl, params, 0), "set_rate_resample");
 
@@ -1564,6 +1629,12 @@ static int set_swparams(struct state *state)
 
 	/* write the parameters to the playback device */
 	CHECK(snd_pcm_sw_params(hndl, params), "sw_params");
+
+	if (SPA_UNLIKELY(spa_log_level_topic_enabled(state->log, SPA_LOG_TOPIC_DEFAULT, SPA_LOG_LEVEL_DEBUG))) {
+		spa_log_debug(state->log, "state after sw_params:");
+		snd_pcm_dump(hndl, state->output);
+		fflush(state->log_file);
+	}
 
 	return 0;
 }
@@ -1778,6 +1849,7 @@ static int get_status(struct state *state, uint64_t current_time,
 		*delay = avail;
 		*target = SPA_MAX(*target, state->read_size);
 	}
+	*target = SPA_MIN(*target, state->buffer_frames);
 	return 0;
 }
 
@@ -2351,7 +2423,7 @@ static void alsa_on_timeout_event(struct spa_source *source)
 	}
 
 #ifndef FASTPATH
-	if (SPA_UNLIKELY(spa_log_level_enabled(state->log, SPA_LOG_LEVEL_TRACE))) {
+	if (SPA_UNLIKELY(spa_log_level_topic_enabled(state->log, SPA_LOG_TOPIC_DEFAULT, SPA_LOG_LEVEL_TRACE))) {
 		struct timespec now;
 		uint64_t nsec;
 		if (spa_system_clock_gettime(state->data_system, CLOCK_MONOTONIC, &now) < 0)
@@ -2446,8 +2518,6 @@ int spa_alsa_start(struct state *state)
 			state->following, state->matching, state->resample);
 
 	CHECK(set_swparams(state), "swparams");
-	if (SPA_UNLIKELY(spa_log_level_enabled(state->log, SPA_LOG_LEVEL_DEBUG)))
-		snd_pcm_dump(state->hndl, state->output);
 
 	if ((err = snd_pcm_prepare(state->hndl)) < 0 && err != -EBUSY) {
 		spa_log_error(state->log, "%s: snd_pcm_prepare error: %s",

@@ -573,7 +573,7 @@ struct pw_node_target {
 	struct spa_list link;
 	struct pw_impl_node *node;
 	struct pw_node_activation *activation;
-	int (*signal) (void *data);
+	int (*signal_func) (void *data);
 	void *data;
 	unsigned int active:1;
 };
@@ -1152,16 +1152,6 @@ int pw_context_find_format(struct pw_context *context,
 			struct spa_pod **format,
 			struct spa_pod_builder *builder,
 			char **error);
-
-/** Find a ports compatible with \a other_port and the format filters */
-struct pw_impl_port *
-pw_context_find_port(struct pw_context *context,
-		  struct pw_impl_port *other_port,
-		  uint32_t id,
-		  struct pw_properties *props,
-		  uint32_t n_format_filters,
-		  struct spa_pod **format_filters,
-		  char **error);
 
 int pw_context_debug_port_params(struct pw_context *context,
 		struct spa_node *node, enum spa_direction direction,

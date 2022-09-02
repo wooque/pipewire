@@ -382,8 +382,7 @@ static int add_pro_profile(pa_card *impl, uint32_t index)
 							0, NULL, NULL, false))) {
 				pa_alsa_init_proplist_pcm(NULL, m->output_proplist, m->output_pcm);
 				pa_proplist_setf(m->output_proplist, "clock.name", "api.alsa.%u", index);
-				snd_pcm_close(m->output_pcm);
-				m->output_pcm = NULL;
+				pa_alsa_close(&m->output_pcm);
 				m->supported = true;
 				pa_channel_map_init_auto(&m->channel_map, m->sample_spec.channels, PA_CHANNEL_MAP_AUX);
 			}
@@ -413,8 +412,7 @@ static int add_pro_profile(pa_card *impl, uint32_t index)
 							0, NULL, NULL, false))) {
 				pa_alsa_init_proplist_pcm(NULL, m->input_proplist, m->input_pcm);
 				pa_proplist_setf(m->input_proplist, "clock.name", "api.alsa.%u", index);
-				snd_pcm_close(m->input_pcm);
-				m->input_pcm = NULL;
+				pa_alsa_close(&m->input_pcm);
 				m->supported = true;
 				pa_channel_map_init_auto(&m->channel_map, m->sample_spec.channels, PA_CHANNEL_MAP_AUX);
 			}
@@ -1058,6 +1056,9 @@ static int read_volume(pa_alsa_device *dev)
 	uint32_t i;
 	int res;
 
+	if (!dev->mixer_handle)
+		return 0;
+
 	if ((res = pa_alsa_path_get_volume(dev->mixer_path, dev->mixer_handle, &dev->mapping->channel_map, &r)) < 0)
 		return res;
 
@@ -1088,6 +1089,9 @@ static void set_volume(pa_alsa_device *dev, const pa_cvolume *v)
 	pa_cvolume r;
 
 	dev->real_volume = *v;
+
+	if (!dev->mixer_handle)
+		return;
 
 	/* Shift up by the base volume */
 	pa_sw_cvolume_divide_scalar(&r, &dev->real_volume, dev->base_volume);
@@ -1139,6 +1143,9 @@ static int read_mute(pa_alsa_device *dev)
 	bool mute;
 	int res;
 
+	if (!dev->mixer_handle)
+		return 0;
+
 	if ((res = pa_alsa_path_get_mute(dev->mixer_path, dev->mixer_handle, &mute)) < 0)
 		return res;
 
@@ -1157,6 +1164,10 @@ static int read_mute(pa_alsa_device *dev)
 static void set_mute(pa_alsa_device *dev, bool mute)
 {
 	dev->muted = mute;
+
+	if (!dev->mixer_handle)
+		return;
+
 	pa_alsa_path_set_mute(dev->mixer_path, dev->mixer_handle, mute);
 }
 
@@ -1735,7 +1746,8 @@ static void sync_mixer(pa_alsa_device *d, pa_device_port *port)
 		setting = data->setting;
 	}
 
-	pa_alsa_path_select(d->mixer_path, setting, d->mixer_handle, d->muted);
+	if (d->mixer_handle)
+		pa_alsa_path_select(d->mixer_path, setting, d->mixer_handle, d->muted);
 
 	if (d->set_mute)
 		d->set_mute(d, d->muted);

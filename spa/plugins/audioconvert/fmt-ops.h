@@ -40,7 +40,7 @@
 #define ITOF(type,v,scale,offs) \
 	(((type)(v)) * (1.0f / (scale)) - (offs))
 #define FTOI(type,v,scale,offs,noise,min,max) \
-	(type)f32_round(SPA_CLAMP((v) * (scale) + (offs) + (noise), min, max))
+	(type)f32_round(SPA_CLAMPF((v) * (scale) + (offs) + (noise), min, max))
 
 #define FMT_OPS_MAX_ALIGN	32
 
@@ -119,9 +119,8 @@
 #define F32_TO_S24_32S(v)	bswap_32(F32_TO_S24_32(v))
 #define F32_TO_S24_32S_D(v,d)	bswap_32(F32_TO_S24_32_D(v,d))
 
-#define S32_MIN			-2147483648
-#define S32_MAX			2147483647
-#define S32_SCALE		2147483648.f
+#define S32_MIN			(S24_MIN * 256)
+#define S32_MAX			(S24_MAX * 256)
 #define S32_TO_F32(v)		ITOF(int32_t, (v) >> 8, S24_SCALE, 0.0f)
 #define S32S_TO_F32(v)		S32_TO_F32(bswap_32(v))
 #define F32_TO_S32(v)		(F32_TO_S24_32(v) << 8)

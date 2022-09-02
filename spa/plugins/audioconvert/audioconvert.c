@@ -909,8 +909,7 @@ static int apply_props(struct impl *this, const struct spa_pod *param)
 			}
 			break;
 		case SPA_PROP_rate:
-			if (spa_pod_get_double(&prop->value, &p->rate) == 0)
-				changed++;
+			spa_pod_get_double(&prop->value, &p->rate);
 			break;
 		case SPA_PROP_params:
 			changed += parse_prop_params(this, &prop->value);
@@ -1471,25 +1470,28 @@ static int setup_convert(struct impl *this)
 
 	rate = this->io_position ?  this->io_position->clock.rate.denom : DEFAULT_RATE;
 
-	if (in->format.info.raw.rate == 0 && in->mode == SPA_PARAM_PORT_CONFIG_MODE_dsp)
+	/* in DSP mode we always convert to the DSP rate */
+	if (in->mode == SPA_PARAM_PORT_CONFIG_MODE_dsp)
 		in->format.info.raw.rate = rate;
-	if (out->format.info.raw.rate == 0 && out->mode == SPA_PARAM_PORT_CONFIG_MODE_dsp)
+	if (out->mode == SPA_PARAM_PORT_CONFIG_MODE_dsp)
 		out->format.info.raw.rate = rate;
 
+	/* try to passthrough the rates */
 	if (in->format.info.raw.rate == 0)
 		in->format.info.raw.rate = out->format.info.raw.rate;
 	else if (out->format.info.raw.rate == 0)
 		out->format.info.raw.rate = in->format.info.raw.rate;
 
-	if (in->format.info.raw.rate == 0 && out->format.info.raw.rate == 0)
-		return -EINVAL;
-	if (in->format.info.raw.channels == 0 && out->format.info.raw.channels == 0)
-		return -EINVAL;
-
+	/* try to passthrough the channels */
 	if (in->format.info.raw.channels == 0)
 		in->format.info.raw.channels = out->format.info.raw.channels;
 	else if (out->format.info.raw.channels == 0)
 		out->format.info.raw.channels = in->format.info.raw.channels;
+
+	if (in->format.info.raw.rate == 0 || out->format.info.raw.rate == 0)
+		return -EINVAL;
+	if (in->format.info.raw.channels == 0 || out->format.info.raw.channels == 0)
+		return -EINVAL;
 
 	if ((res = setup_in_convert(this)) < 0)
 		return res;
@@ -1722,21 +1724,51 @@ impl_node_port_enum_params(void *object, int seq,
 			param = spa_format_audio_raw_build(&b, id, &port->format.info.raw);
 		break;
 	case SPA_PARAM_Buffers:
+	{
+		uint32_t size;
+		struct dir *dir;
+
 		if (!port->have_format)
 			return -EIO;
 		if (result.index > 0)
 			return 0;
+
+		dir = &this->dir[direction];
+		if (dir->mode == SPA_PARAM_PORT_CONFIG_MODE_dsp) {
+			/* DSP ports always use the quantum_limit as the buffer
+			 * size. */
+			size = this->quantum_limit;
+		} else {
+			uint32_t irate, orate;
+			/* Convert ports are scaled so that they can always
+			 * provide one quantum of data */
+			irate = dir->format.info.raw.rate;
+
+			/* collect the other port rate */
+			dir = &this->dir[SPA_DIRECTION_REVERSE(direction)];
+			if (dir->mode == SPA_PARAM_PORT_CONFIG_MODE_dsp)
+				orate = this->io_position ?  this->io_position->clock.rate.denom : DEFAULT_RATE;
+			else
+				orate = dir->format.info.raw.rate;
+
+			/* always keep some extra room for adaptive resampling */
+			size = this->quantum_limit * 2;
+			/*  scale the buffer size when we can. */
+			if (irate != 0 && orate != 0)
+				size = size * (irate + orate - 1) / orate;
+		}
 
 		param = spa_pod_builder_add_object(&b,
 			SPA_TYPE_OBJECT_ParamBuffers, id,
 			SPA_PARAM_BUFFERS_buffers, SPA_POD_CHOICE_RANGE_Int(2, 1, MAX_BUFFERS),
 			SPA_PARAM_BUFFERS_blocks,  SPA_POD_Int(port->blocks),
 			SPA_PARAM_BUFFERS_size,    SPA_POD_CHOICE_RANGE_Int(
-								this->quantum_limit * port->stride,
+								size * port->stride,
 								16 * port->stride,
 								INT32_MAX),
 			SPA_PARAM_BUFFERS_stride,  SPA_POD_Int(port->stride));
 		break;
+	}
 	case SPA_PARAM_Meta:
 		switch (result.index) {
 		case 0:
@@ -2193,15 +2225,22 @@ static int channelmix_process_control(struct impl *this, struct port *ctrlport,
 	return end ? 1 : 0;
 }
 
+static uint32_t resample_get_in_size(struct impl *this, bool passthrough, uint32_t out_size)
+{
+	uint32_t match_size = passthrough ? out_size : resample_in_len(&this->resample, out_size);
+	spa_log_trace_fp(this->log, "%p: current match %u", this, match_size);
+	return match_size;
+}
+
 static uint32_t resample_update_rate_match(struct impl *this, bool passthrough, uint32_t out_size, uint32_t in_queued)
 {
-	double rate = this->rate_scale / this->props.rate;
 	uint32_t delay, match_size;
 
 	if (passthrough) {
 		delay = 0;
 		match_size = out_size;
 	} else {
+		double rate = this->rate_scale / this->props.rate;
 		if (this->io_rate_match &&
 		    SPA_FLAG_IS_SET(this->io_rate_match->flags, SPA_IO_RATE_MATCH_FLAG_ACTIVE))
 			rate *= this->io_rate_match->rate;
@@ -2470,16 +2509,16 @@ static int impl_node_process(void *object)
 
 	/* calculate how many samples we are going to consume. */
 	if (this->direction == SPA_DIRECTION_INPUT) {
-		uint32_t n_in;
-		/* then figure out how much input samples we need to consume */
-		n_in = resample_update_rate_match(this, resample_passthrough, n_out, 0);
 		if (!in_avail || this->drained) {
+			/* no input, ask for more, update rate-match first */
+			resample_update_rate_match(this, resample_passthrough, n_out, 0);
 			spa_log_trace_fp(this->log, "%p: no input drained:%d", this, this->drained);
-			/* no input, ask for more */
 			res |= this->drained ? SPA_STATUS_DRAINED : SPA_STATUS_NEED_DATA;
 			return res;
 		}
-		n_samples = SPA_MIN(n_samples, n_in);
+		/* else figure out how much input samples we need to consume */
+		n_samples = SPA_MIN(n_samples,
+				resample_get_in_size(this, resample_passthrough, n_out));
 	} else {
 		/* in merge mode we consume one duration of samples */
 		n_samples = SPA_MIN(n_samples, quant_samples);

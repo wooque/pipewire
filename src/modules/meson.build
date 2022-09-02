@@ -33,12 +33,17 @@ module_sources = [
   'module-x11-bell.c',
 ]
 
+pipewire_module_access_deps = [spa_dep, mathlib, dl_lib, pipewire_dep]
+if flatpak_support
+  pipewire_module_access_deps += glib2_dep
+endif
+
 pipewire_module_access = shared_library('pipewire-module-access', [ 'module-access.c' ],
   include_directories : [configinc],
   install : true,
   install_dir : modules_install_dir,
   install_rpath: modules_install_dir,
-  dependencies : [spa_dep, mathlib, dl_lib, pipewire_dep],
+  dependencies : pipewire_module_access_deps
 )
 
 pipewire_module_loopback = shared_library('pipewire-module-loopback',
@@ -277,6 +282,10 @@ if avahi_dep.found()
   cdata.set('HAVE_AVAHI', true)
 endif
 
+if flatpak_support
+  pipewire_module_protocol_pulse_deps += glib2_dep
+endif
+
 pipewire_module_protocol_pulse = shared_library('pipewire-module-protocol-pulse',
   pipewire_module_protocol_pulse_sources,
   include_directories : [configinc],
@@ -470,7 +479,7 @@ pipewire_module_raop_sink = shared_library('pipewire-module-raop-sink',
 endif
 summary({'raop-sink (requires OpenSSL)': build_module_raop}, bool_yn: true, section: 'Optional Modules')
 
-roc_lib = cc.find_library('roc', required: get_option('roc'))
+roc_lib = cc.find_library('roc', has_headers: ['roc/config.h' ], required: get_option('roc'))
 summary({'ROC': roc_lib.found()}, bool_yn: true, section: 'Streaming between daemons')
 
 build_module_roc = roc_lib.found()
@@ -518,7 +527,7 @@ pipewire_module_fallback_sink = shared_library('pipewire-module-fallback-sink',
   dependencies : [mathlib, dl_lib, rt_lib, pipewire_dep],
 )
 
-build_module_avb = get_option('avb').allowed()
+build_module_avb = get_option('avb').require(host_machine.system() == 'linux', error_message: 'AVB support is only available on Linux').allowed()
 if build_module_avb
 pipewire_module_avb = shared_library('pipewire-module-avb',
   [ 'module-avb.c',

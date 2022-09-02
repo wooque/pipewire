@@ -103,6 +103,11 @@ PW_LOG_TOPIC(mod_topic_connection, "conn." NAME);
  * - XDG_RUNTIME_DIR
  * - USERPROFILE
  *
+ * The socket address will be written into the notification file descriptor
+ * if the following environment variable is set:
+ *
+ * - PIPEWIRE_NOTIFICATION_FD
+ *
  * When a client connect, the connection will be made to:
  *
  * - PIPEWIRE_REMOTE : the environment with the remote name
@@ -605,12 +610,15 @@ static struct client_data *client_new(struct server *s, int fd)
 	if (client == NULL)
 		goto exit;
 
-
 	this = pw_impl_client_get_user_data(client);
 	spa_list_append(&s->this.client_list, &this->protocol_link);
 
 	this->server = s;
 	this->client = client;
+	pw_map_init(&this->compat_v2.types, 0, 32);
+
+	pw_impl_client_add_listener(client, &this->client_listener, &client_events, this);
+
 	this->source = pw_loop_add_io(pw_context_get_main_loop(context),
 				      fd, SPA_IO_ERR | SPA_IO_HUP, true,
 				      connection_data, this);
@@ -625,14 +633,10 @@ static struct client_data *client_new(struct server *s, int fd)
 		goto cleanup_client;
 	}
 
-	pw_map_init(&this->compat_v2.types, 0, 32);
-
 	pw_protocol_native_connection_add_listener(this->connection,
 						   &this->conn_listener,
 						   &server_conn_events,
 						   this);
-
-	pw_impl_client_add_listener(client, &this->client_listener, &client_events, this);
 
 	if ((res = pw_impl_client_register(client, NULL)) < 0)
 		goto cleanup_client;
@@ -761,6 +765,44 @@ socket_data(void *data, int fd, uint32_t mask)
 	}
 }
 
+static int write_socket_address(struct server *s)
+{
+	long v;
+	int fd, res = 0;
+	char *endptr;
+	const char *env = getenv("PIPEWIRE_NOTIFICATION_FD");
+
+	if (env == NULL || env[0] == '\0')
+		return 0;
+
+	errno = 0;
+	v = strtol(env, &endptr, 10);
+	if (endptr[0] != '\0')
+		errno = EINVAL;
+	if (errno != 0) {
+		res = -errno;
+		pw_log_error("server %p: strtol() failed with error: %m", s);
+		goto error;
+	}
+	fd = (int)v;
+	if (v != fd) {
+		res = -ERANGE;
+		pw_log_error("server %p: invalid fd %ld: %s", s, v, spa_strerror(res));
+		goto error;
+	}
+	if (dprintf(fd, "%s\n", s->addr.sun_path) < 0) {
+		res = -errno;
+		pw_log_error("server %p: dprintf() failed with error: %m", s);
+		goto error;
+	}
+	close(fd);
+	unsetenv("PIPEWIRE_NOTIFICATION_FD");
+	return 0;
+
+error:
+	return res;
+}
+
 static int add_socket(struct pw_protocol *protocol, struct server *s)
 {
 	socklen_t size;
@@ -815,6 +857,12 @@ static int add_socket(struct pw_protocol *protocol, struct server *s)
 		}
 	}
 
+	res = write_socket_address(s);
+	if (res < 0) {
+		pw_log_error("server %p: failed to write socket address: %s", s,
+				spa_strerror(res));
+		goto error_close;
+	}
 	s->activated = activated;
 	s->loop = pw_context_get_main_loop(protocol->context);
 	if (s->loop == NULL) {
@@ -990,35 +1038,9 @@ error:
 	goto done;
 }
 
-static void on_client_connection_destroy(void *data)
-{
-	struct client *impl = data;
-	spa_hook_remove(&impl->conn_listener);
-}
-
-static void on_client_need_flush(void *data)
-{
-        struct client *impl = data;
-
-	pw_log_trace("need flush");
-	impl->need_flush = true;
-
-	if (impl->source && !(impl->source->mask & SPA_IO_OUT)) {
-		pw_loop_update_io(impl->context->main_loop,
-				impl->source, impl->source->mask | SPA_IO_OUT);
-	}
-}
-
-static const struct pw_protocol_native_connection_events client_conn_events = {
-	PW_VERSION_PROTOCOL_NATIVE_CONNECTION_EVENTS,
-	.destroy = on_client_connection_destroy,
-	.need_flush = on_client_need_flush,
-};
-
 static int impl_connect_fd(struct pw_protocol_client *client, int fd, bool do_close)
 {
 	struct client *impl = SPA_CONTAINER_OF(client, struct client, this);
-	int res;
 
 	impl->connected = false;
 	impl->disconnecting = false;
@@ -1028,23 +1050,10 @@ static int impl_connect_fd(struct pw_protocol_client *client, int fd, bool do_cl
 					fd,
 					SPA_IO_IN | SPA_IO_OUT | SPA_IO_HUP | SPA_IO_ERR,
 					do_close, on_remote_data, impl);
-	if (impl->source == NULL) {
-		res = -errno;
-		goto error_cleanup;
-	}
+	if (impl->source == NULL)
+		return -errno;
 
-	pw_protocol_native_connection_add_listener(impl->connection,
-						   &impl->conn_listener,
-						   &client_conn_events,
-						   impl);
 	return 0;
-
-error_cleanup:
-	if (impl->connection) {
-		pw_protocol_native_connection_destroy(impl->connection);
-		impl->connection = NULL;
-	}
-	return res;
 }
 
 static void impl_disconnect(struct pw_protocol_client *client)
@@ -1057,9 +1066,7 @@ static void impl_disconnect(struct pw_protocol_client *client)
                 pw_loop_destroy_source(impl->context->main_loop, impl->source);
 	impl->source = NULL;
 
-	if (impl->connection)
-                pw_protocol_native_connection_destroy(impl->connection);
-	impl->connection = NULL;
+	pw_protocol_native_connection_set_fd(impl->connection, -1);
 }
 
 static void impl_destroy(struct pw_protocol_client *client)
@@ -1067,6 +1074,10 @@ static void impl_destroy(struct pw_protocol_client *client)
 	struct client *impl = SPA_CONTAINER_OF(client, struct client, this);
 
 	impl_disconnect(client);
+
+	if (impl->connection)
+                pw_protocol_native_connection_destroy(impl->connection);
+	impl->connection = NULL;
 
 	spa_list_remove(&client->link);
 	client_unref(impl);
@@ -1134,6 +1145,31 @@ error:
 	goto done;
 }
 
+static void on_client_connection_destroy(void *data)
+{
+	struct client *impl = data;
+	spa_hook_remove(&impl->conn_listener);
+}
+
+static void on_client_need_flush(void *data)
+{
+        struct client *impl = data;
+
+	pw_log_trace("need flush");
+	impl->need_flush = true;
+
+	if (impl->source && !(impl->source->mask & SPA_IO_OUT)) {
+		pw_loop_update_io(impl->context->main_loop,
+				impl->source, impl->source->mask | SPA_IO_OUT);
+	}
+}
+
+static const struct pw_protocol_native_connection_events client_conn_events = {
+	PW_VERSION_PROTOCOL_NATIVE_CONNECTION_EVENTS,
+	.destroy = on_client_connection_destroy,
+	.need_flush = on_client_need_flush,
+};
+
 static struct pw_protocol_client *
 impl_new_client(struct pw_protocol *protocol,
 		struct pw_core *core,
@@ -1160,6 +1196,10 @@ impl_new_client(struct pw_protocol *protocol,
 		res = -errno;
 		goto error_free;
 	}
+	pw_protocol_native_connection_add_listener(impl->connection,
+						   &impl->conn_listener,
+						   &client_conn_events,
+						   impl);
 
 	if (props) {
 		str = spa_dict_lookup(props, PW_KEY_REMOTE_INTENTION);
