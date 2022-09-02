@@ -1,6 +1,10 @@
 pipewire (0.3.57-1) UNRELEASED; urgency=medium
 
   * New upstream release
+  * Drop patches included in upstream release:
+      - aaa015d0: avb: fix compilation on big endian
+      - 1a5ec445: avb: fix compilation on big endian
+      - f857fd46: avb: fix compilation on big endian
 
  -- Dylan Aïssi <daissi@debian.org>  Fri, 02 Sep 2022 21:38:56 +0200
 
