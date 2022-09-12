@@ -11,7 +11,9 @@ experimental.
 Using pipewire as a substitute for PulseAudio
 ---------------------------------------------
 
-Install the pipewire-pulse package and log back in
+Install the pipewire-pulse package and log back in.
+And potentially install the new recommended session manager
+wireplumber instead of the deprecated pipewire-media-session.
 
 Using pipewire as the default ALSA output device
 ------------------------------------------------
