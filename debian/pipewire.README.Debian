@@ -38,3 +38,15 @@ To enable this:
 * either run JACK clients using the pw-jack(1) wrapper, or copy
   /usr/share/doc/pipewire/examples/ld.so.conf.d/pipewire-jack-*.conf
   into /etc/ld.so.conf.d/ and run ldconfig as root.
+
+Setting pipewire real-time priority limits
+---------------------------------------
+
+The "pipewire" package creates a system group called "pipewire".
+The upstream recommended priority limits for this group are defined in:
+
+* /etc/security/limits.d/95-pipewire.conf
+
+To enable these limits for your user, add it to the "pipewire" group.
+
+* sudo adduser yourusername pipewire
