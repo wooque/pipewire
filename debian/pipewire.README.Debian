@@ -1,12 +1,9 @@
 Using pipewire for audio
 ========================
 
-pipewire in Debian is primarily intended to be used for video
-(screen sharing and remote desktop, particularly in GNOME and KDE Wayland
-sessions). However, it can also be used for audio.
-
-This is not a supported scenario for Debian 11, and is considered
-experimental.
+pipewire in Debian was initially used for video (screen sharing and remote
+desktop, particularly in GNOME and KDE Wayland sessions). However, it has
+matured enough to also be used for audio.
 
 
 Using pipewire as a substitute for PulseAudio

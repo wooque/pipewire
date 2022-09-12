@@ -348,9 +348,7 @@ Description: libraries for the PipeWire multimedia server - bluetooth plugins
   - Generating graphs for audio and video processing.
  .
  This package contains a plugin to make Bluetooth audio devices such as
- speakers and headsets available to the PipeWire server. It is considered
- to be experimental, and is disabled by default (even if installed) to
- avoid conflicts with equivalent functionality in PulseAudio.
+ speakers and headsets available to the PipeWire server.
 
 Package: libspa-0.2-jack
 Architecture: linux-any
@@ -369,7 +367,6 @@ Description: libraries for the PipeWire multimedia server - JACK client
  .
  This package contains a plugin to make PipeWire able to connect to a
  JACK server, which will be used for audio playback and recording.
- Using PipeWire for audio is considered to be experimental.
 
 Package: pipewire-audio-client-libraries
 Section: oldlibs
