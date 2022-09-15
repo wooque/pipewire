@@ -1,3 +1,20 @@
+pipewire (0.3.58-1) UNRELEASED; urgency=medium
+
+  [ Dylan Aïssi ]
+  * New upstream release
+  * Create a pipewire group and define real-time priority limits
+      (Closes: #1011399)
+  * Add suggestion to install wireplumber in pipewire.README.Debian
+  * Clarify relation between pipewire and libspa-0.2-bluetooth in
+      pipewire.README.Debian (Closes: #998220, #1011035)
+  * Remove reference to experimental status of pipewire for audio
+
+  [ Sebastien Bacher ]
+  * Let pipewire-pulse conflicts on pulseaudio
+      (Closes: #1013276, LP: #1975823)
+
+ -- Dylan Aïssi <daissi@debian.org>  Thu, 15 Sep 2022 14:08:52 +0200
+
 pipewire (0.3.57-1) unstable; urgency=medium
 
   * New upstream release
