@@ -2,6 +2,7 @@ pipewire (0.3.58-1) UNRELEASED; urgency=medium
 
   [ Dylan Aïssi ]
   * New upstream release
+      - Fix crackling sound if pavucontrol is open (Closes: #1019888)
   * Create a pipewire group and define real-time priority limits
       (Closes: #1011399)
   * Add suggestion to install wireplumber in pipewire.README.Debian
