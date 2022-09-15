@@ -32,6 +32,7 @@
 #include <spa/support/log.h>
 #include <spa/utils/result.h>
 #include <spa/utils/list.h>
+#include <spa/utils/json.h>
 #include <spa/utils/names.h>
 #include <spa/utils/string.h>
 #include <spa/node/node.h>
@@ -839,10 +840,6 @@ static int parse_prop_params(struct impl *this, struct spa_pod *params)
 		spa_log_info(this->log, "key:'%s' val:'%s'", name, value);
 		changed += audioconvert_set_param(this, name, value);
 	}
-	if (changed) {
-		channelmix_init(&this->mix);
-		set_volume(this);
-	}
 	return changed;
 }
 
@@ -924,6 +921,7 @@ static int apply_props(struct impl *this, const struct spa_pod *param)
 		else if (have_channel_volume)
 			p->have_soft_volume = false;
 
+		channelmix_init(&this->mix);
 		set_volume(this);
 	}
 	return changed;
@@ -1255,7 +1253,7 @@ static void set_volume(struct impl *this)
 	float volumes[SPA_AUDIO_MAX_CHANNELS];
 	struct dir *dir = &this->dir[this->direction];
 
-	spa_log_debug(this->log, "%p", this);
+	spa_log_debug(this->log, "%p have_format:%d", this, dir->have_format);
 
 	if (dir->have_format)
 		remap_volumes(this, &dir->format);
@@ -1726,20 +1724,20 @@ impl_node_port_enum_params(void *object, int seq,
 	case SPA_PARAM_Buffers:
 	{
 		uint32_t size;
-		struct dir *dir;
 
 		if (!port->have_format)
 			return -EIO;
 		if (result.index > 0)
 			return 0;
 
-		dir = &this->dir[direction];
-		if (dir->mode == SPA_PARAM_PORT_CONFIG_MODE_dsp) {
+		if (PORT_IS_DSP(this, direction, port_id)) {
 			/* DSP ports always use the quantum_limit as the buffer
 			 * size. */
 			size = this->quantum_limit;
 		} else {
 			uint32_t irate, orate;
+			struct dir *dir = &this->dir[direction];
+
 			/* Convert ports are scaled so that they can always
 			 * provide one quantum of data */
 			irate = dir->format.info.raw.rate;
@@ -2772,6 +2770,34 @@ impl_get_size(const struct spa_handle_factory *factory,
 	return sizeof(struct impl);
 }
 
+static uint32_t channel_from_name(const char *name)
+{
+	int i;
+	for (i = 0; spa_type_audio_channel[i].name; i++) {
+		if (spa_streq(name, spa_debug_type_short_name(spa_type_audio_channel[i].name)))
+			return spa_type_audio_channel[i].type;
+	}
+	return SPA_AUDIO_CHANNEL_UNKNOWN;
+}
+
+static inline uint32_t parse_position(uint32_t *pos, const char *val, size_t len)
+{
+	struct spa_json it[2];
+	char v[256];
+	uint32_t i = 0;
+
+	spa_json_init(&it[0], val, len);
+	if (spa_json_enter_array(&it[0], &it[1]) <= 0)
+		spa_json_init(&it[1], val, len);
+
+	while (spa_json_get_string(&it[1], v, sizeof(v)) > 0 &&
+			i < SPA_AUDIO_MAX_CHANNELS) {
+		pos[i++] = channel_from_name(v);
+	}
+	return i;
+}
+
+
 static int
 impl_init(const struct spa_handle_factory *factory,
 	  struct spa_handle *handle,
@@ -2822,9 +2848,15 @@ impl_init(const struct spa_handle_factory *factory,
 			else
 				this->direction = SPA_DIRECTION_INPUT;
 		}
+		else if (spa_streq(k, SPA_KEY_AUDIO_POSITION))
+                        this->props.n_channels = parse_position(this->props.channel_map, s, strlen(s));
 		else
 			audioconvert_set_param(this, k, s);
 	}
+
+	this->props.channel.n_volumes = this->props.n_channels;
+	this->props.soft.n_volumes = this->props.n_channels;
+	this->props.monitor.n_volumes = this->props.n_channels;
 
 	this->dir[SPA_DIRECTION_INPUT].latency = SPA_LATENCY_INFO(SPA_DIRECTION_INPUT);
 	this->dir[SPA_DIRECTION_OUTPUT].latency = SPA_LATENCY_INFO(SPA_DIRECTION_OUTPUT);
