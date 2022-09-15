@@ -704,6 +704,7 @@ struct pw_impl_node {
 	unsigned int transport_sync:1;	/**< supports transport sync */
 	unsigned int current_pending:1;	/**< a quantum/rate update is pending */
 	unsigned int moved:1;		/**< the node was moved drivers */
+	unsigned int added:1;		/**< the node was add to graph */
 
 	uint32_t port_user_data_size;	/**< extra size for port user data */
 

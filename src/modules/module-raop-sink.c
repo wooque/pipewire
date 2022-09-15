@@ -66,9 +66,62 @@
  *
  * Creates a new Sink to stream to an Airplay device.
  *
+ * Normally this sink is automatically created with \ref page_module_raop_discover
+ * with the right parameters but it is possible to manually create a RAOP sink
+ * as well.
+ *
  * ## Module Options
  *
+ * Options specific to the behavior of this module
+ *
+ * - `raop.hostname`: The hostname of the remote end.
+ * - `raop.port`: The port of the remote end.
+ * - `raop.transport`: The data transport to use, one of "udp" or "tcp". Defaults
+ *                    to "udp".
+ * - `raop.encryption.type`: The encryption type to use. One of "none", "RSA" or
+ *                    "auth_setup". Default is "none".
+ * - `raop.audio.codec`: The audio codec to use. Needs to be "PCM". Defaults to "PCM".
+ * - `raop.password`: The password to use.
+ * - `stream.props = {}`: properties to be passed to the sink stream
+ *
+ * Options with well-known behavior.
+ *
+ * - \ref PW_KEY_REMOTE_NAME
+ * - \ref PW_KEY_AUDIO_FORMAT
+ * - \ref PW_KEY_AUDIO_RATE
+ * - \ref PW_KEY_AUDIO_CHANNELS
+ * - \ref SPA_KEY_AUDIO_POSITION
+ * - \ref PW_KEY_NODE_NAME
+ * - \ref PW_KEY_NODE_DESCRIPTION
+ * - \ref PW_KEY_NODE_GROUP
+ * - \ref PW_KEY_NODE_LATENCY
+ * - \ref PW_KEY_NODE_VIRTUAL
+ * - \ref PW_KEY_MEDIA_CLASS
+ *
  * ## Example configuration
+ *
+ *\code{.unparsed}
+ * context.modules = [
+ * {   name = libpipewire-module-raop-sink
+ *     args = {
+ *         # Set the remote address to tunnel to
+ *         raop.hostname = "my-raop-device"
+ *         raop.port = 8190
+ *         #raop.transport = "udp"
+ *         raop.encryption = "RSA"
+ *         #raop.audio.codec = "PCM"
+ *         #raop.password = "****"
+ *         #audio.format = "S16"
+ *         #audio.rate = 44100
+ *         #audio.channels = 22
+ *         #audio.position = [ FL FR ]
+ *         stream.props = {
+ *             # extra sink properties
+ *         }
+ *     }
+ * }
+ * ]
+ *\endcode
  *
  * ## See also
  *
@@ -106,7 +159,13 @@ PW_LOG_TOPIC_STATIC(mod_topic, "mod." NAME);
 
 #define DEFAULT_LATENCY (DEFAULT_RATE*2)
 
-#define MODULE_USAGE	"[ node.latency=<latency as fraction> ] "				\
+#define MODULE_USAGE	"[ raop.hostname=<name of host> ] "					\
+			"[ raop.port=<remote port> ] "						\
+			"[ raop.transport=<transport, default:udp> ] "				\
+			"[ raop.encryption.type=<encryption, default:none> ] "			\
+			"[ raop.audio.codec=PCM ] "						\
+			"[ raop.password=<password for auth> ] "				\
+			"[ node.latency=<latency as fraction> ] "				\
 			"[ node.name=<name of the nodes> ] "					\
 			"[ node.description=<description of the nodes> ] "			\
 			"[ audio.format=<format, default:"DEFAULT_FORMAT"> ] "			\
@@ -1072,17 +1131,14 @@ static void rtsp_auth_setup_reply(void *data, int status, const struct spa_dict 
 
 static int rtsp_do_auth_setup(struct impl *impl)
 {
-	int res;
-
-	char output[] = 
+	static const unsigned char content[33] =
 		"\x01"
 		"\x59\x02\xed\xe9\x0d\x4e\xf2\xbd\x4c\xb6\x8a\x63\x30\x03\x82\x07"
 		"\xa9\x4d\xbd\x50\xd8\xaa\x46\x5b\x5d\x8c\x01\x2a\x0c\x7e\x1d\x4e";
 
-	res = pw_rtsp_client_url_send(impl->rtsp, "/auth-setup", "POST", &impl->headers->dict,
-			"application/octet-stream", output, rtsp_auth_setup_reply, impl);
-
-	return res;
+	return pw_rtsp_client_url_send(impl->rtsp, "/auth-setup", "POST", &impl->headers->dict,
+				       "application/octet-stream", content, sizeof(content),
+				       rtsp_auth_setup_reply, impl);
 }
 
 static const char *find_attr(char **tokens, const char *key)

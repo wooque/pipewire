@@ -31,20 +31,8 @@
 #include <spa/support/log.h>
 #include <spa/utils/defs.h>
 
-#define VOLUME_MIN 0.0f
-#define VOLUME_NORM 1.0f
-
 #include "channelmix-ops.h"
 #include "hilbert.h"
-
-
-#define _M(ch)		(1UL << SPA_AUDIO_CHANNEL_ ## ch)
-#define MASK_MONO	_M(FC)|_M(MONO)|_M(UNKNOWN)
-#define MASK_STEREO	_M(FL)|_M(FR)|_M(UNKNOWN)
-#define MASK_QUAD	_M(FL)|_M(FR)|_M(RL)|_M(RR)|_M(UNKNOWN)
-#define MASK_3_1	_M(FL)|_M(FR)|_M(FC)|_M(LFE)
-#define MASK_5_1	_M(FL)|_M(FR)|_M(FC)|_M(LFE)|_M(SL)|_M(SR)|_M(RL)|_M(RR)
-#define MASK_7_1	_M(FL)|_M(FR)|_M(FC)|_M(LFE)|_M(SL)|_M(SR)|_M(RL)|_M(RR)
 
 #define ANY	((uint32_t)-1)
 #define EQ	((uint32_t)-2)
@@ -199,8 +187,11 @@ static int make_matrix(struct channelmix *mix)
 			for (i = 0; i < SPA_AUDIO_MAX_CHANNELS; i++)
 				matrix[i][i]= 1.0f;
 		}
+		if (dst_mask & FRONT)
+			filter_fc = true;
+		if (dst_mask & _MASK(LFE))
+			filter_lfe = true;
 		src_mask = dst_mask = ~0LU;
-		filter_fc = filter_lfe = true;
 		goto done;
 	} else {
 		spa_log_debug(mix->log, "matching channels");
