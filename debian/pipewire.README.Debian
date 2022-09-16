@@ -63,6 +63,18 @@ To enable this:
 Setting pipewire real-time priority limits
 ---------------------------------------
 
+!!!  WARNING  !!!
+Your system has real-time priority limits for a good reason. This allows it
+to remain stable in case a process goes crazy. RTKit allows limited use of
+real-time priority without the risk of locking up the system if a real-time
+task starts spinning.
+Some upstream recommendations for real-time are to increase these limits to
+bypass RTKit or to disable most of its safeguards. By following them, your
+system could be blocked if a process goes wrong.
+These performance tweaks are not needed for a normal use of pipewire, instead
+modifying pipewire configuration is enough.
+!!!  WARNING  !!!
+
 The "pipewire" package creates a system group called "pipewire".
 The upstream recommended priority limits for this group are defined in:
 
