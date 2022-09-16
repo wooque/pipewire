@@ -1,4 +1,4 @@
-pipewire (0.3.58-1) UNRELEASED; urgency=medium
+pipewire (0.3.58-1) unstable; urgency=medium
 
   [ Dylan Aïssi ]
   * New upstream release
@@ -14,7 +14,7 @@ pipewire (0.3.58-1) UNRELEASED; urgency=medium
   * Let pipewire-pulse conflicts on pulseaudio
       (Closes: #1013276, LP: #1975823)
 
- -- Dylan Aïssi <daissi@debian.org>  Thu, 15 Sep 2022 14:08:52 +0200
+ -- Dylan Aïssi <daissi@debian.org>  Fri, 16 Sep 2022 15:41:31 +0200
 
 pipewire (0.3.57-1) unstable; urgency=medium
 
