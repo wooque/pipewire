@@ -35,6 +35,8 @@ to install the libspa-0.2-bluetooth package.
 Using pipewire as the default ALSA output device
 ------------------------------------------------
 
+Install the pipewire-alsa package.
+
 ALSA clients can be configured to output via pipewire instead of
 PulseAudio or directly to ALSA.
 
@@ -48,6 +50,8 @@ To enable this:
 
 Using pipewire as a substitute for JACK
 ---------------------------------------
+
+Install the pipewire-jack package.
 
 JACK clients can be configured to output via pipewire instead of JACK.
 
