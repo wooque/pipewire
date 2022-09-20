@@ -1,0 +1,13 @@
+# https://bugs.debian.org/1019971
+
+Since pipewire-alsa has been split from the previous pipewire-audio-client-libraries
+package, it would be useful to directly install the 99-pipewire-default.conf
+file in the right location: Install 99-pipewire-default.conf in
+usr/share/alsa/alsa.conf.d/ and create a symlink to etc/alsa/conf.d/.
+Similarly to what is done for 50-pipewire.conf.
+
+But, people upgrading their pipewire-audio-client-libraries package will
+have pipewire-alsa installed and enabled by default on their system
+even if it was not enabled before the upgrade.
+
+Thus, this should be done at least after the release of Bookworm.
