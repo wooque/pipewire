@@ -1,3 +1,18 @@
+pipewire (0.3.58-2) unstable; urgency=medium
+
+  * Mention to install pipewire-alsa and pipewire-jack
+      in README.Debian (Closes: #1019971)
+  * Add debian/pipewire-alsa.TODO
+  * Patch pipewire-pulse.service to be sure it is started
+      after a session manager (Closes: #1019944)
+    Because of a bug in the way systemd handles aliases, they have been removed
+    in wireplumber and pipewire-media-session services to avoid a conflict.
+    This change needs to be reflected in the pipewire-pulse service to be sure
+    it is started after a session manager, otherwise pipewire-pulse doesn't
+    see any devices.
+
+ -- Dylan Aïssi <daissi@debian.org>  Fri, 23 Sep 2022 11:01:16 +0200
+
 pipewire (0.3.58-1) unstable; urgency=medium
 
   [ Dylan Aïssi ]
