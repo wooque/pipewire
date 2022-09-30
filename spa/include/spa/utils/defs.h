@@ -27,8 +27,18 @@
 
 #ifdef __cplusplus
 extern "C" {
+# if __cplusplus >= 201103L
+#  define SPA_STATIC_ASSERT static_assert
+# endif
 #else
-#include <stdbool.h>
+# include <stdbool.h>
+# if __STDC_VERSION__ >= 201112L
+#  define SPA_STATIC_ASSERT _Static_assert
+# endif
+#endif
+#ifndef SPA_STATIC_ASSERT
+#define SPA_STATIC_ASSERT(a, b)						\
+	((void)sizeof(struct { int spa_static_assertion_failed : 2 * !!(a) - 1; }))
 #endif
 #include <inttypes.h>
 #include <signal.h>
@@ -74,8 +84,16 @@ extern "C" {
 #define SPA_FLAG_MASK(field,mask,flag)	(((field) & (mask)) == (flag))
 #define SPA_FLAG_IS_SET(field,flag)	SPA_FLAG_MASK(field,flag,flag)
 #define SPA_FLAG_SET(field,flag)	((field) |= (flag))
-#define SPA_FLAG_CLEAR(field,flag)	((field) &= ~(flag))
-#define SPA_FLAG_UPDATE(field,flag,val)	((val) ? SPA_FLAG_SET(field,flag) : SPA_FLAG_CLEAR(field,flag))
+#define SPA_FLAG_CLEAR(field, flag)					\
+({									\
+	SPA_STATIC_ASSERT(__builtin_constant_p(flag) ?			\
+	              (__typeof__(flag))(__typeof__(field))(__typeof__(flag))(flag) == (flag) : \
+		      sizeof(field) >= sizeof(flag),			\
+			"truncation problem when masking " #field	\
+			" with ~" #flag);				\
+	((field) &= ~(__typeof__(field))(flag));			\
+})
+#define SPA_FLAG_UPDATE(field,flag,val)	((val) ? SPA_FLAG_SET((field),(flag)) : SPA_FLAG_CLEAR((field),(flag)))
 
 enum spa_direction {
 	SPA_DIRECTION_INPUT = 0,
@@ -84,25 +102,25 @@ enum spa_direction {
 
 #define SPA_DIRECTION_REVERSE(d)	((d) ^ 1)
 
-#define SPA_RECTANGLE(width,height) (struct spa_rectangle){ width, height }
+#define SPA_RECTANGLE(width,height) ((struct spa_rectangle){ (width), (height) })
 struct spa_rectangle {
 	uint32_t width;
 	uint32_t height;
 };
 
-#define SPA_POINT(x,y) (struct spa_point){ x, y }
+#define SPA_POINT(x,y) ((struct spa_point){ (x), (y) })
 struct spa_point {
 	int32_t x;
 	int32_t y;
 };
 
-#define SPA_REGION(x,y,width,height) (struct spa_region){ SPA_POINT(x,y), SPA_RECTANGLE(width,height) }
+#define SPA_REGION(x,y,width,height) ((struct spa_region){ SPA_POINT(x,y), SPA_RECTANGLE(width,height) })
 struct spa_region {
 	struct spa_point position;
 	struct spa_rectangle size;
 };
 
-#define SPA_FRACTION(num,denom) (struct spa_fraction){ num, denom }
+#define SPA_FRACTION(num,denom) ((struct spa_fraction){ (num), (denom) })
 struct spa_fraction {
 	uint32_t num;
 	uint32_t denom;
@@ -120,7 +138,7 @@ struct spa_fraction {
  * ```
  */
 #define SPA_FOR_EACH_ELEMENT(arr, ptr) \
-	for (ptr = arr; (void*)ptr < SPA_PTROFF(arr, sizeof(arr), void); ptr++)
+	for ((ptr) = arr; (void*)(ptr) < SPA_PTROFF(arr, sizeof(arr), void); (ptr)++)
 
 #define SPA_ABS(a)			\
 ({					\
@@ -156,7 +174,7 @@ struct spa_fraction {
 #define SPA_SWAP(a,b)					\
 ({							\
 	__typeof__(a) _t = (a);				\
-	a = b; b = _t;					\
+	(a) = b; (b) = _t;					\
 })
 
 #define SPA_TYPECHECK(type,x)		\
@@ -180,7 +198,7 @@ struct spa_fraction {
 #define SPA_MEMBER(b,o,t) SPA_PTROFF(b,o,t)
 #define SPA_MEMBER_ALIGN(b,o,a,t) SPA_PTROFF_ALIGN(b,o,a,t)
 
-#define SPA_CONTAINER_OF(p,t,m) ((t*)((uintptr_t)p - offsetof(t,m)))
+#define SPA_CONTAINER_OF(p,t,m) ((t*)((uintptr_t)(p) - offsetof(t,m)))
 
 #define SPA_PTRDIFF(p1,p2) ((intptr_t)(p1) - (intptr_t)(p2))
 
@@ -194,7 +212,7 @@ struct spa_fraction {
 #define SPA_IDX_INVALID  ((unsigned int)-1)
 #define SPA_ID_INVALID  ((uint32_t)0xffffffff)
 
-#define SPA_NSEC_PER_SEC  (1000000000ll)
+#define SPA_NSEC_PER_SEC  (1000000000LL)
 #define SPA_NSEC_PER_MSEC (1000000ll)
 #define SPA_NSEC_PER_USEC (1000ll)
 #define SPA_USEC_PER_SEC  (1000000ll)
@@ -239,7 +257,17 @@ struct spa_fraction {
 #define SPA_ROUND_DOWN(num,value)	((num) - ((num) % (value)))
 #define SPA_ROUND_UP(num,value)		((((num) + (value) - 1) / (value)) * (value))
 
-#define SPA_ROUND_DOWN_N(num,align)	((num) & ~((align) - 1))
+#define SPA_MASK_NEGATED(num1, num2)					\
+({									\
+	SPA_STATIC_ASSERT(__builtin_constant_p(num2) ?			\
+	              (__typeof__(num2))(__typeof__(num1))(__typeof__(num2))(num2) == (num2) : \
+		      sizeof(num1) >= sizeof(num2),			\
+			"truncation problem when masking " #num1	\
+			" with ~" #num2);				\
+	((num1) & ~(__typeof__(num1))(num2));				\
+})
+
+#define SPA_ROUND_DOWN_N(num,align)	SPA_MASK_NEGATED((num), (align) - 1)
 #define SPA_ROUND_UP_N(num,align)	SPA_ROUND_DOWN_N((num) + ((align) - 1),align)
 
 #define SPA_PTR_ALIGNMENT(p,align)	((intptr_t)(p) & ((align)-1))

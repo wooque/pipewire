@@ -40,7 +40,7 @@ int spa_libcamera_open(struct impl *impl)
 	if (impl->acquired)
 		return 0;
 
-	spa_log_info(impl->log, "open camera %s", impl->props.device);
+	spa_log_info(impl->log, "open camera %s", impl->device_id.c_str());
 	impl->camera->acquire();
 
 	impl->allocator = new FrameBufferAllocator(impl->camera);
@@ -54,10 +54,10 @@ int spa_libcamera_close(struct impl *impl)
 	struct port *port = &impl->out_ports[0];
 	if (!impl->acquired)
 		return 0;
-	if (impl->active || port->have_format)
+	if (impl->active || port->current_format)
 		return 0;
 
-	spa_log_info(impl->log, "close camera %s", impl->props.device);
+	spa_log_info(impl->log, "close camera %s", impl->device_id.c_str());
 	delete impl->allocator;
 	impl->allocator = nullptr;
 
@@ -69,13 +69,12 @@ int spa_libcamera_close(struct impl *impl)
 
 static void spa_libcamera_get_config(struct impl *impl)
 {
-	if (impl->have_config)
+	if (impl->config)
 		return;
 
 	StreamRoles roles;
 	roles.push_back(VideoRecording);
 	impl->config = impl->camera->generateConfiguration(roles);
-	impl->have_config = true;
 }
 
 static int spa_libcamera_buffer_recycle(struct impl *impl, struct port *port, uint32_t buffer_id)
@@ -91,10 +90,10 @@ static int spa_libcamera_buffer_recycle(struct impl *impl, struct port *port, ui
 	if (buffer_id >= impl->requestPool.size()) {
 		spa_log_warn(impl->log, "invalid buffer_id %u >= %zu",
 				buffer_id, impl->requestPool.size());
-                return -EINVAL;
-        }
+		return -EINVAL;
+	}
 	Request *request = impl->requestPool[buffer_id].get();
-        Stream *stream = port->streamConfig.stream();
+	Stream *stream = port->streamConfig.stream();
 	FrameBuffer *buffer = impl->allocator->buffers(stream)[buffer_id].get();
 	if ((res = request->addBuffer(stream, buffer)) < 0) {
 		spa_log_warn(impl->log, "can't add buffer %u for request: %s",
@@ -104,7 +103,7 @@ static int spa_libcamera_buffer_recycle(struct impl *impl, struct port *port, ui
 	if (!impl->active) {
 		impl->pendingRequests.push_back(request);
 		return 0;
-        } else {
+	} else {
 		if ((res = impl->camera->queueRequest(request)) < 0) {
 			spa_log_warn(impl->log, "can't queue buffer %u: %s",
 				buffer_id, spa_strerror(res));
@@ -119,7 +118,7 @@ static int allocBuffers(struct impl *impl, struct port *port, unsigned int count
 	int res;
 
 	if ((res = impl->allocator->allocate(port->streamConfig.stream())) < 0)
-                return res;
+		return res;
 
 	for (unsigned int i = 0; i < count; i++) {
 		std::unique_ptr<Request> request = impl->camera->createRequest(i);
@@ -129,7 +128,7 @@ static int allocBuffers(struct impl *impl, struct port *port, unsigned int count
 		}
 		impl->requestPool.push_back(std::move(request));
 	}
-        return res;
+	return res;
 }
 
 static void freeBuffers(struct impl *impl, struct port *port)
@@ -419,8 +418,6 @@ static int spa_libcamera_set_format(struct impl *impl, struct port *port,
 	if ((res = allocBuffers(impl, port, port->streamConfig.bufferCount)) < 0)
 		goto error;
 
-	port->have_format = true;
-
 	port->info.change_mask |= SPA_PORT_CHANGE_MASK_FLAGS | SPA_PORT_CHANGE_MASK_RATE;
 	port->info.flags = SPA_PORT_FLAG_CAN_ALLOC_BUFFERS |
 		SPA_PORT_FLAG_LIVE |
@@ -607,7 +604,7 @@ spa_libcamera_alloc_buffers(struct impl *impl, struct port *port,
 }
 
 
-void Impl::requestComplete(libcamera::Request *request)
+void impl::requestComplete(libcamera::Request *request)
 {
 	struct impl *impl = this;
 	struct port *port = &impl->out_ports[0];
@@ -618,12 +615,12 @@ void Impl::requestComplete(libcamera::Request *request)
 	spa_log_debug(impl->log, "request complete");
 
 	if ((request->status() == Request::RequestCancelled)) {
-                spa_log_debug(impl->log, "Request was cancelled");
-                return;
-        }
+		spa_log_debug(impl->log, "Request was cancelled");
+		return;
+	}
 	FrameBuffer *buffer = request->findBuffer(stream);
 	if (buffer == nullptr) {
-                spa_log_warn(impl->log, "unknown buffer");
+		spa_log_warn(impl->log, "unknown buffer");
 		return;
 	}
 	const FrameMetadata &fmd = buffer->metadata();
@@ -664,7 +661,7 @@ static int spa_libcamera_stream_on(struct impl *impl)
 	struct port *port = &impl->out_ports[0];
 	int res;
 
-	if (!port->have_format) {
+	if (!port->current_format) {
 		spa_log_error(impl->log, "Exting %s with -EIO", __FUNCTION__);
 		return -EIO;
 	}
@@ -674,15 +671,15 @@ static int spa_libcamera_stream_on(struct impl *impl)
 
 	impl->camera->requestCompleted.connect(impl, &impl::requestComplete);
 
-	spa_log_info(impl->log, "starting camera %s", impl->props.device);
+	spa_log_info(impl->log, "starting camera %s", impl->device_id.c_str());
 	if ((res = impl->camera->start()) < 0)
 		return res == -EACCES ? -EBUSY : res;
 
 	for (Request *req : impl->pendingRequests) {
-                if ((res = impl->camera->queueRequest(req)) < 0)
+		if ((res = impl->camera->queueRequest(req)) < 0)
 			return res == -EACCES ? -EBUSY : res;
-        }
-        impl->pendingRequests.clear();
+	}
+	impl->pendingRequests.clear();
 
 	impl->source.func = libcamera_on_fd_events;
 	impl->source.data = impl;
@@ -724,7 +721,7 @@ static int spa_libcamera_stream_off(struct impl *impl)
 		return 0;
 	}
 
-	spa_log_info(impl->log, "stopping camera %s", impl->props.device);
+	spa_log_info(impl->log, "stopping camera %s", impl->device_id.c_str());
 	impl->pendingRequests.clear();
 
 	if ((res = impl->camera->stop()) < 0)

@@ -78,7 +78,7 @@ struct impl {
 	struct spa_dbus *dbus;
 	DBusConnection *conn;
 
-#define DEFAULT_ENABLED_PROFILES (SPA_BT_PROFILE_HSP_HS | SPA_BT_PROFILE_HFP_AG)
+#define DEFAULT_ENABLED_PROFILES (SPA_BT_PROFILE_HFP_HF | SPA_BT_PROFILE_HFP_AG)
 	enum spa_bt_profile enabled_profiles;
 
 	struct spa_source sco;
@@ -259,6 +259,7 @@ static void rfcomm_free(struct rfcomm *rfcomm)
 
 #define RFCOMM_MESSAGE_MAX_LENGTH 256
 
+/* from HF/HS to AG */
 SPA_PRINTF_FUNC(2, 3)
 static ssize_t rfcomm_send_cmd(const struct rfcomm *rfcomm, const char *format, ...)
 {
@@ -279,7 +280,14 @@ static ssize_t rfcomm_send_cmd(const struct rfcomm *rfcomm, const char *format, 
 
 	spa_log_debug(backend->log, "RFCOMM >> %s", message);
 
-	message[len] = '\n';
+	/*
+	 * The format of an AT command from the HF to the AG shall be: <AT command><cr>
+	 * - HFP 1.8, 4.34.1
+	 *
+	 * The format for a command from the HS to the AG is thus: AT<cmd>=<value><cr>
+	 * - HSP 1.2, 4.8.1
+	 */
+	message[len] = '\r';
 	/* `message` is no longer null-terminated */
 
 	len = write(rfcomm->source.fd, message, len + 1);
@@ -293,6 +301,7 @@ static ssize_t rfcomm_send_cmd(const struct rfcomm *rfcomm, const char *format, 
 	return len;
 }
 
+/* from AG to HF/HS */
 SPA_PRINTF_FUNC(2, 3)
 static ssize_t rfcomm_send_reply(const struct rfcomm *rfcomm, const char *format, ...)
 {
@@ -313,6 +322,18 @@ static ssize_t rfcomm_send_reply(const struct rfcomm *rfcomm, const char *format
 
 	spa_log_debug(backend->log, "RFCOMM >> %s", &message[2]);
 
+	/*
+	 * The format of the OK code from the AG to the HF shall be: <cr><lf>OK<cr><lf>
+	 * The format of the generic ERROR code from the AG to the HF shall be: <cr><lf>ERROR<cr><lf>
+	 * The format of an unsolicited result code from the AG to the HF shall be: <cr><lf><result code><cr><lf>
+	 * - HFP 1.8, 4.34.1
+	 *
+	 * If the command is processed successfully, the resulting response from the AG to the HS is: <cr><lf>OK<cr><lf>
+	 * If the command is not processed successfully, or is not recognized,
+	 * the resulting response from the AG to the HS is: <cr><lf>ERROR<cr><lf>
+	 * The format for an unsolicited result code (such as RING) from the AG to the HS is: <cr><lf><result code><cr><lf>
+	 * - HSP 1.2, 4.8.1
+	 */
 	message[0] = '\r';
 	message[1] = '\n';
 	message[len + 2] = '\r';
@@ -747,26 +768,21 @@ static bool rfcomm_hfp_ag(struct rfcomm *rfcomm, char* buf)
 		/* retrieve supported codecs */
 		/* response has the form AT+BAC=<codecID1>,<codecID2>,<codecIDx>
 		   strategy: split the string into tokens */
-		static const char separators[] = "=,";
 
 		char* token;
 		int cntr = 0;
 
-		token = strtok (buf, separators);
-		while (token != NULL)
-		{
+		while ((token = strsep(&buf, "=,"))) {
+			unsigned int codec_id;
+
 			/* skip token 0 i.e. the "AT+BAC=" part */
-			if (cntr > 0) {
-				int codec_id;
-				sscanf (token, "%u", &codec_id);
+			if (cntr > 0 && sscanf(token, "%u", &codec_id) == 1) {
 				spa_log_debug(backend->log, "RFCOMM AT+BAC found codec %u", codec_id);
 				if (codec_id == HFP_AUDIO_CODEC_MSBC) {
 					rfcomm->msbc_supported_by_hfp = true;
 					spa_log_debug(backend->log, "RFCOMM headset supports mSBC codec");
 				}
 			}
-			/* get next token */
-			token = strtok (NULL, separators);
 			cntr++;
 		}
 
@@ -809,7 +825,7 @@ static bool rfcomm_hfp_ag(struct rfcomm *rfcomm, char* buf)
 	} else if (!rfcomm->slc_configured) {
 		spa_log_warn(backend->log, "RFCOMM receive command before SLC completed: %s", buf);
 		rfcomm_send_reply(rfcomm, "ERROR");
-		return false;
+		return true;
 	} else if (sscanf(buf, "AT+BCS=%u", &selected_codec) == 1) {
 		/* parse BCS(=Bluetooth Codec Selection) reply */
 		bool was_switching_codec = rfcomm->hfp_ag_switching_codec && (rfcomm->device != NULL);
@@ -918,29 +934,18 @@ static bool rfcomm_hfp_ag(struct rfcomm *rfcomm, char* buf)
 
 static bool rfcomm_hfp_hf(struct rfcomm *rfcomm, char* buf)
 {
-	static const char separators[] = "\r\n:";
-
 	struct impl *backend = rfcomm->backend;
 	unsigned int features;
 	unsigned int gain;
 	unsigned int selected_codec;
 	char* token;
 
-	token = strtok(buf, separators);
-	while (token != NULL)
-	{
-		if (spa_strstartswith(token, "+BRSF")) {
-			/* get next token */
-			token = strtok(NULL, separators);
-			features = atoi(token);
+	while ((token = strsep(&buf, "\r\n"))) {
+		if (sscanf(token, "+BRSF:%u", &features) == 1) {
 			if (((features & (SPA_BT_HFP_AG_FEATURE_CODEC_NEGOTIATION)) != 0) &&
 			    rfcomm->msbc_supported_by_hfp)
 				rfcomm->codec_negotiation_supported = true;
-		} else if (spa_strstartswith(token, "+BCS") && rfcomm->codec_negotiation_supported) {
-			/* get next token */
-			token = strtok(NULL, separators);
-			selected_codec = atoi(token);
-
+		} else if (sscanf(token, "+BCS:%u", &selected_codec) == 1 && rfcomm->codec_negotiation_supported) {
 			if (selected_codec != HFP_AUDIO_CODEC_CVSD && selected_codec != HFP_AUDIO_CODEC_MSBC) {
 				spa_log_warn(backend->log, "unsupported codec negotiation: %d", selected_codec);
 			} else {
@@ -965,24 +970,13 @@ static bool rfcomm_hfp_hf(struct rfcomm *rfcomm, char* buf)
 					}
 				}
 			}
-		} else if (spa_strstartswith(token, "+CIND")) {
-			/* get next token and discard it */
-			token = strtok(NULL, separators);
-		} else if (spa_strstartswith(token, "+VGM")) {
-			/* get next token */
-			token = strtok(NULL, separators);
-			gain = atoi(token);
-
+		} else if (sscanf(token, "+VGM%*1[:=]%u", &gain) == 1) {
 			if (gain <= SPA_BT_VOLUME_HS_MAX) {
 				rfcomm_emit_volume_changed(rfcomm, SPA_BT_VOLUME_ID_TX, gain);
 			} else {
 				spa_log_debug(backend->log, "RFCOMM receive unsupported VGM gain: %s", token);
 			}
-		} else if (spa_strstartswith(token, "+VGS")) {
-			/* get next token */
-			token = strtok(NULL, separators);
-			gain = atoi(token);
-
+		} else if (sscanf(token, "+VGS%*1[:=]%u", &gain) == 1) {
 			if (gain <= SPA_BT_VOLUME_HS_MAX) {
 				rfcomm_emit_volume_changed(rfcomm, SPA_BT_VOLUME_ID_RX, gain);
 			} else {
@@ -1041,8 +1035,6 @@ static bool rfcomm_hfp_hf(struct rfcomm *rfcomm, char* buf)
 					break;
 			}
 		}
-		/* get next token */
-		token = strtok(NULL, separators);
 	}
 
 	return true;

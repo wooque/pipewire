@@ -1205,7 +1205,7 @@ again:
 				if (settings->clock_rate_update_mode == CLOCK_RATE_UPDATE_MODE_HARD)
 					suspend_driver(context, n);
 			} else {
-				if (n->info.state >= PW_NODE_STATE_IDLE)
+				if (n->info.state >= PW_NODE_STATE_SUSPENDED)
 					suspend_driver(context, n);
 			}
 			/* we're setting the pending rate. This will become the new
@@ -1263,7 +1263,7 @@ again:
 			n->current_pending = false;
 		}
 
-		pw_log_debug("%p: driving %p running:%d passive:%d quantum:%u '%s'",
+		pw_log_debug("%p: driver %p running:%d passive:%d quantum:%u '%s'",
 				context, n, running, n->passive, quantum, n->name);
 
 		/* first change the node states of the followers to the new target */

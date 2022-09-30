@@ -90,8 +90,8 @@ struct props {
 	struct volumes monitor;
 	unsigned int have_soft_volume:1;
 	unsigned int mix_disabled:1;
-	unsigned int resample_quality;
 	unsigned int resample_disabled:1;
+	unsigned int resample_quality;
 	double rate;
 };
 
@@ -105,10 +105,11 @@ static void props_reset(struct props *props)
 	init_volumes(&props->channel);
 	init_volumes(&props->soft);
 	init_volumes(&props->monitor);
+	props->have_soft_volume = false;
 	props->mix_disabled = false;
-	props->rate = 1.0;
-	props->resample_quality = RESAMPLE_DEFAULT_QUALITY;
 	props->resample_disabled = false;
+	props->resample_quality = RESAMPLE_DEFAULT_QUALITY;
+	props->rate = 1.0;
 }
 
 struct buffer {
@@ -215,7 +216,8 @@ struct impl {
 	uint32_t in_offset;
 	uint32_t out_offset;
 	unsigned int started:1;
-	unsigned int peaks:1;
+	unsigned int setup:1;
+	unsigned int resample_peaks:1;
 	unsigned int is_passthrough:1;
 	unsigned int drained:1;
 
@@ -834,6 +836,8 @@ static int parse_prop_params(struct impl *this, struct spa_pod *params)
 			snprintf(value, sizeof(value), "%s",
 					SPA_POD_VALUE(struct spa_pod_bool, pod) ?
 					"true" : "false");
+		} else if (spa_pod_is_none(pod)) {
+			spa_zero(value);
 		} else
 			continue;
 
@@ -1353,7 +1357,7 @@ static int setup_resample(struct impl *this)
 	this->resample.quality = this->props.resample_quality;
 	this->resample.cpu_flags = this->cpu_flags;
 
-	if (this->peaks)
+	if (this->resample_peaks)
 		res = resample_peaks_init(&this->resample);
 	else
 		res = resample_native_init(&this->resample);
@@ -1463,6 +1467,12 @@ static int setup_convert(struct impl *this)
 	in = &this->dir[SPA_DIRECTION_INPUT];
 	out = &this->dir[SPA_DIRECTION_OUTPUT];
 
+	spa_log_debug(this->log, "%p: setup:%d in_format:%d out_format:%d", this,
+			this->setup, in->have_format, out->have_format);
+
+	if (this->setup)
+		return 0;
+
 	if (!in->have_format || !out->have_format)
 		return -EINVAL;
 
@@ -1506,6 +1516,7 @@ static int setup_convert(struct impl *this)
 		this->tmp_datas[1][i] = SPA_PTROFF(this->tmp[1], this->empty_size * i, void);
 		this->tmp_datas[1][i] = SPA_PTR_ALIGN(this->tmp_datas[1][i], MAX_ALIGN, void);
 	}
+	this->setup = true;
 
 	emit_node_info(this, false);
 
@@ -1537,12 +1548,13 @@ static int impl_node_send_command(void *object, const struct spa_command *comman
 		this->started = true;
 		break;
 	case SPA_NODE_COMMAND_Suspend:
-		SPA_FALLTHROUGH;
-	case SPA_NODE_COMMAND_Flush:
-		reset_node(this);
+		this->setup = false;
 		SPA_FALLTHROUGH;
 	case SPA_NODE_COMMAND_Pause:
 		this->started = false;
+		break;
+	case SPA_NODE_COMMAND_Flush:
+		reset_node(this);
 		break;
 	default:
 		return -ENOTSUP;
@@ -2467,6 +2479,7 @@ static int impl_node_process(void *object)
 							volume, mon_max);
 
 					bd->chunk->size = mon_max * port->stride;
+					bd->chunk->stride = port->stride;
 
 					spa_log_trace_fp(this->log, "%p: monitor %d %d", this,
 							remap, mon_max);
@@ -2667,9 +2680,10 @@ static int impl_node_process(void *object)
 			for (j = 0; j < port->blocks; j++) {
 				bd = &buf->buf->datas[j];
 				bd->chunk->size = this->out_offset * port->stride;
+				bd->chunk->stride = port->stride;
 				SPA_FLAG_UPDATE(bd->chunk->flags, SPA_CHUNK_FLAG_EMPTY, in_empty);
-				spa_log_trace_fp(this->log, "out: %d %d %d", this->out_offset,
-						port->stride, bd->chunk->size);
+				spa_log_trace_fp(this->log, "out: offs:%d stride:%d size:%d",
+						this->out_offset, port->stride, bd->chunk->size);
 			}
 			io->status = SPA_STATUS_HAVE_DATA;
 			io->buffer_id = buf->id;
@@ -2678,7 +2692,7 @@ static int impl_node_process(void *object)
 		this->drained = draining;
 		this->out_offset = 0;
 	}
-	else if (n_samples == 0 && this->peaks) {
+	else if (n_samples == 0 && this->resample_peaks) {
 		for (i = 0; i < dir->n_ports; i++) {
 			port = GET_OUT_PORT(this, i);
 			if (port->is_monitor || port->is_control)
@@ -2841,15 +2855,20 @@ impl_init(const struct spa_handle_factory *factory,
 		if (spa_streq(k, "clock.quantum-limit"))
 			spa_atou32(s, &this->quantum_limit, 0);
 		else if (spa_streq(k, "resample.peaks"))
-			this->peaks = spa_atob(s);
+			this->resample_peaks = spa_atob(s);
+		else if (spa_streq(k, "resample.prefill"))
+			SPA_FLAG_UPDATE(this->resample.options,
+				RESAMPLE_OPTION_PREFILL, spa_atob(s));
 		else if (spa_streq(k, "factory.mode")) {
 			if (spa_streq(s, "merge"))
 				this->direction = SPA_DIRECTION_OUTPUT;
 			else
 				this->direction = SPA_DIRECTION_INPUT;
 		}
-		else if (spa_streq(k, SPA_KEY_AUDIO_POSITION))
-                        this->props.n_channels = parse_position(this->props.channel_map, s, strlen(s));
+		else if (spa_streq(k, SPA_KEY_AUDIO_POSITION)) {
+			if (s != NULL)
+	                        this->props.n_channels = parse_position(this->props.channel_map, s, strlen(s));
+		}
 		else
 			audioconvert_set_param(this, k, s);
 	}
