@@ -314,8 +314,8 @@ static int process_header(struct pw_rtsp_client *client, char *buf)
 			return -EPROTO;
 
 		*value++ = '\0';
-		while (*value == ' ')
-			value++;
+
+		value = pw_strip(value, " ");
 
 		pw_properties_set(client->headers, key, value);
 	}

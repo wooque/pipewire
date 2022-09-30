@@ -576,61 +576,64 @@ conv_f32d_to_s32_sse2(struct convert *conv, void * SPA_RESTRICT dst[], const voi
 	i;						\
 })
 
-
-static inline void update_noise_sse2(struct convert *conv, uint32_t n_samples)
+void conv_noise_rect_sse2(struct convert *conv, float *noise, uint32_t n_samples)
 {
 	uint32_t n;
-	const uint32_t *r = SPA_PTR_ALIGN(conv->random, 16, uint32_t);
-	int32_t *p = SPA_PTR_ALIGN(conv->prev, 16, int32_t), op;
+	const uint32_t *r = conv->random;
 	__m128 scale = _mm_set1_ps(conv->scale);
+	__m128i in[1];
 	__m128 out[1];
-	float *noise = SPA_PTR_ALIGN(conv->noise, 16, float);
-	__m128i in[1], old[1], new[1];
 
-	switch (conv->noise_method) {
-	case DITHER_METHOD_RECTANGULAR:
-		for (n = 0; n < n_samples; n += 4) {
-			in[0] = _MM_XORSHIFT_EPI32(r);
-			out[0] = _mm_cvtepi32_ps(_MM_XORSHIFT_EPI32(r));
-			out[0] = _mm_mul_ps(out[0], scale);
-			_mm_store_ps(&noise[n], out[0]);
-		}
-		break;
-	case DITHER_METHOD_TRIANGULAR:
-		for (n = 0; n < n_samples; n += 4) {
-			in[0] = _mm_sub_epi32( _MM_XORSHIFT_EPI32(r), _MM_XORSHIFT_EPI32(r));
-			out[0] = _mm_cvtepi32_ps(in[0]);
-			out[0] = _mm_mul_ps(out[0], scale);
-			_mm_store_ps(&noise[n], out[0]);
-		}
-		break;
-	case DITHER_METHOD_TRIANGULAR_HF:
-		old[0] = _mm_load_si128((__m128i*)p);
-		for (n = 0; n < n_samples; n += 4) {
-			new[0] = _MM_XORSHIFT_EPI32(r);
-			in[0] = _mm_sub_epi32(old[0], new[0]);
-			old[0] = new[0];
-			out[0] = _mm_cvtepi32_ps(in[0]);
-			out[0] = _mm_mul_ps(out[0], scale);
-			_mm_store_ps(&noise[n], out[0]);
-		}
-		_mm_store_si128((__m128i*)p, old[0]);
-		break;
-	case NOISE_METHOD_PATTERN:
-		op = *p;
-		for (n = 0; n < n_samples; n++)
-			noise[n] = conv->scale * (1-((op++>>10)&1));
-		*p = op;
-		break;
+	for (n = 0; n < n_samples; n += 4) {
+		in[0] = _MM_XORSHIFT_EPI32(r);
+		out[0] = _mm_cvtepi32_ps(in[0]);
+		out[0] = _mm_mul_ps(out[0], scale);
+		_mm_store_ps(&noise[n], out[0]);
 	}
+}
+
+void conv_noise_tri_sse2(struct convert *conv, float *noise, uint32_t n_samples)
+{
+	uint32_t n;
+	const uint32_t *r = conv->random;
+	__m128 scale = _mm_set1_ps(conv->scale);
+	__m128i in[1];
+	__m128 out[1];
+
+	for (n = 0; n < n_samples; n += 4) {
+		in[0] = _mm_sub_epi32( _MM_XORSHIFT_EPI32(r), _MM_XORSHIFT_EPI32(r));
+		out[0] = _mm_cvtepi32_ps(in[0]);
+		out[0] = _mm_mul_ps(out[0], scale);
+		_mm_store_ps(&noise[n], out[0]);
+	}
+}
+
+void conv_noise_tri_hf_sse2(struct convert *conv, float *noise, uint32_t n_samples)
+{
+	uint32_t n;
+	int32_t *p = conv->prev;
+	const uint32_t *r = conv->random;
+	__m128 scale = _mm_set1_ps(conv->scale);
+	__m128i in[1], old[1], new[1];
+	__m128 out[1];
+
+	old[0] = _mm_load_si128((__m128i*)p);
+	for (n = 0; n < n_samples; n += 4) {
+		new[0] = _MM_XORSHIFT_EPI32(r);
+		in[0] = _mm_sub_epi32(old[0], new[0]);
+		old[0] = new[0];
+		out[0] = _mm_cvtepi32_ps(in[0]);
+		out[0] = _mm_mul_ps(out[0], scale);
+		_mm_store_ps(&noise[n], out[0]);
+	}
+	_mm_store_si128((__m128i*)p, old[0]);
 }
 
 static void
 conv_f32d_to_s32_1s_noise_sse2(struct convert *conv, void * SPA_RESTRICT dst, const void * SPA_RESTRICT src,
-		uint32_t n_channels, uint32_t n_samples)
+		float *noise, uint32_t n_channels, uint32_t n_samples)
 {
 	const float *s = src;
-	float *noise = SPA_PTR_ALIGN(conv->noise, 16, float);
 	int32_t *d = dst;
 	uint32_t n, unrolled;
 	__m128 in[1];
@@ -676,14 +679,16 @@ conv_f32d_to_s32_noise_sse2(struct convert *conv, void * SPA_RESTRICT dst[], con
 {
 	int32_t *d = dst[0];
 	uint32_t i, k, chunk, n_channels = conv->n_channels;
+	float *noise = conv->noise;
 
-	update_noise_sse2(conv, SPA_MIN(n_samples, conv->noise_size));
+	convert_update_noise(conv, noise, SPA_MIN(n_samples, conv->noise_size));
 
 	for(i = 0; i < n_channels; i++) {
 		const float *s = src[i];
 		for(k = 0; k < n_samples; k += chunk) {
 			chunk = SPA_MIN(n_samples - k, conv->noise_size);
-			conv_f32d_to_s32_1s_noise_sse2(conv, &d[i + k*n_channels], &s[k], n_channels, chunk);
+			conv_f32d_to_s32_1s_noise_sse2(conv, &d[i + k*n_channels],
+					&s[k], noise, n_channels, chunk);
 		}
 	}
 }
@@ -1261,11 +1266,10 @@ conv_f32d_to_s16_sse2(struct convert *conv, void * SPA_RESTRICT dst[], const voi
 
 static void
 conv_f32d_to_s16_1s_noise_sse2(struct convert *conv, void * SPA_RESTRICT dst, const void * SPA_RESTRICT src,
-		uint32_t n_channels, uint32_t n_samples)
+		const float *noise, uint32_t n_channels, uint32_t n_samples)
 {
 	const float *s0 = src;
 	int16_t *d = dst;
-	float *noise = SPA_PTR_ALIGN(conv->noise, 16, float);
 	uint32_t n, unrolled;
 	__m128 in[2];
 	__m128i out[2];
@@ -1312,25 +1316,26 @@ conv_f32d_to_s16_noise_sse2(struct convert *conv, void * SPA_RESTRICT dst[], con
 {
 	int16_t *d = dst[0];
 	uint32_t i, k, chunk, n_channels = conv->n_channels;
+	float *noise = conv->noise;
 
-	update_noise_sse2(conv, SPA_MIN(n_samples, conv->noise_size));
+	convert_update_noise(conv, noise, SPA_MIN(n_samples, conv->noise_size));
 
 	for(i = 0; i < n_channels; i++) {
 		const float *s = src[i];
 		for(k = 0; k < n_samples; k += chunk) {
 			chunk = SPA_MIN(n_samples - k, conv->noise_size);
-			conv_f32d_to_s16_1s_noise_sse2(conv, &d[i + k*n_channels], &s[k], n_channels, chunk);
+			conv_f32d_to_s16_1s_noise_sse2(conv, &d[i + k*n_channels],
+					&s[k], noise, n_channels, chunk);
 		}
 	}
 }
 
 static void
 conv_f32_to_s16_1_noise_sse2(struct convert *conv, void * SPA_RESTRICT dst, const void * SPA_RESTRICT src,
-		uint32_t n_samples)
+		const float *noise, uint32_t n_samples)
 {
 	const float *s = src;
 	int16_t *d = dst;
-	float *noise = SPA_PTR_ALIGN(conv->noise, 16, float);
 	uint32_t n, unrolled;
 	__m128 in[2];
 	__m128i out[2];
@@ -1366,15 +1371,16 @@ conv_f32d_to_s16d_noise_sse2(struct convert *conv, void * SPA_RESTRICT dst[], co
 		uint32_t n_samples)
 {
 	uint32_t i, k, chunk, n_channels = conv->n_channels;
+	float *noise = conv->noise;
 
-	update_noise_sse2(conv, SPA_MIN(n_samples, conv->noise_size));
+	convert_update_noise(conv, noise, SPA_MIN(n_samples, conv->noise_size));
 
 	for(i = 0; i < n_channels; i++) {
 		const float *s = src[i];
 		int16_t *d = dst[i];
 		for(k = 0; k < n_samples; k += chunk) {
 			chunk = SPA_MIN(n_samples - k, conv->noise_size);
-			conv_f32_to_s16_1_noise_sse2(conv, &d[k], &s[k], chunk);
+			conv_f32_to_s16_1_noise_sse2(conv, &d[k], &s[k], noise, chunk);
 		}
 	}
 }

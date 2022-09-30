@@ -53,7 +53,7 @@ struct spa_pod_parser {
 	struct spa_pod_parser_state state;
 };
 
-#define SPA_POD_PARSER_INIT(buffer,size)  (struct spa_pod_parser){ buffer, size, 0, {} }
+#define SPA_POD_PARSER_INIT(buffer,size)  ((struct spa_pod_parser){ (buffer), (size), 0, {} })
 
 static inline void spa_pod_parser_init(struct spa_pod_parser *parser,
 				       const void *data, uint32_t size)
@@ -82,12 +82,20 @@ spa_pod_parser_reset(struct spa_pod_parser *parser, struct spa_pod_parser_state 
 static inline struct spa_pod *
 spa_pod_parser_deref(struct spa_pod_parser *parser, uint32_t offset, uint32_t size)
 {
-	if (offset + 8 <= size) {
-		struct spa_pod *pod = SPA_PTROFF(parser->data, offset, struct spa_pod);
-		if (offset + SPA_POD_SIZE(pod) <= size)
-			return pod;
+	/* Cast to uint64_t to avoid wraparound.  Add 8 for the pod itself. */
+	const uint64_t long_offset = (uint64_t)offset + 8;
+	if (long_offset <= size && (offset & 7) == 0) {
+		/* Use void* because creating a misaligned pointer is undefined. */
+		void *pod = SPA_PTROFF(parser->data, offset, void);
+		/*
+		 * Check that the pointer is aligned and that the size (rounded
+		 * to the next multiple of 8) is in bounds.
+		 */
+		if (SPA_IS_ALIGNED(pod, __alignof__(struct spa_pod)) &&
+		    long_offset + SPA_ROUND_UP_N((uint64_t)SPA_POD_BODY_SIZE(pod), 8) <= size)
+			return (struct spa_pod *)pod;
 	}
-        return NULL;
+	return NULL;
 }
 
 static inline struct spa_pod *spa_pod_parser_frame(struct spa_pod_parser *parser, struct spa_pod_frame *frame)
@@ -285,10 +293,15 @@ static inline bool spa_pod_parser_can_collect(const struct spa_pod *pod, char ty
 	if (pod == NULL)
 		return false;
 
-	if (spa_pod_is_choice(pod) &&
-	    SPA_POD_CHOICE_TYPE(pod) == SPA_CHOICE_None &&
-	    spa_pod_parser_can_collect(SPA_POD_CHOICE_CHILD(pod), type))
-		return true;
+	if (SPA_POD_TYPE(pod) == SPA_TYPE_Choice) {
+		if (!spa_pod_is_choice(pod))
+			return false;
+		if (type == 'V')
+			return true;
+		if (SPA_POD_CHOICE_TYPE(pod) != SPA_CHOICE_None)
+			return false;
+		pod = SPA_POD_CHOICE_CHILD(pod);
+	}
 
 	switch (type) {
 	case 'P':
@@ -328,7 +341,6 @@ static inline bool spa_pod_parser_can_collect(const struct spa_pod *pod, char ty
 	case 'O':
 		return spa_pod_is_object(pod) || spa_pod_is_none(pod);
 	case 'V':
-		return spa_pod_is_choice(pod);
 	default:
 		return false;
 	}
@@ -355,7 +367,7 @@ do {											\
 		break;									\
 	case 's':									\
 		*va_arg(args, char**) =							\
-			(pod == NULL || (SPA_POD_TYPE(pod) == SPA_TYPE_None)		\
+			((pod) == NULL || (SPA_POD_TYPE(pod) == SPA_TYPE_None)		\
 				? NULL							\
 				: (char *)SPA_POD_CONTENTS(struct spa_pod_string, pod));	\
 		break;									\
@@ -407,8 +419,8 @@ do {											\
 	{										\
 		const struct spa_pod **d = va_arg(args, const struct spa_pod**);	\
 		if (d)									\
-			*d = (pod == NULL || (SPA_POD_TYPE(pod) == SPA_TYPE_None)	\
-				? NULL : pod);						\
+			*d = ((pod) == NULL || (SPA_POD_TYPE(pod) == SPA_TYPE_None)	\
+				? NULL : (pod));						\
 		break;									\
 	}										\
 	default:									\
@@ -493,8 +505,7 @@ static inline int spa_pod_parser_getv(struct spa_pod_parser *parser, va_list arg
 			}
 			SPA_POD_PARSER_SKIP(*format, args);
 		} else {
-			if (pod->type == SPA_TYPE_Choice && *format != 'V' &&
-			    SPA_POD_CHOICE_TYPE(pod) == SPA_CHOICE_None)
+			if (pod->type == SPA_TYPE_Choice && *format != 'V')
 				pod = SPA_POD_CHOICE_CHILD(pod);
 
 			SPA_POD_PARSER_COLLECT(pod, *format, args);

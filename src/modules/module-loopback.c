@@ -179,6 +179,12 @@ static void capture_destroy(void *d)
 static void capture_process(void *d)
 {
 	struct impl *impl = d;
+	pw_stream_trigger_process(impl->playback);
+}
+
+static void playback_process(void *d)
+{
+	struct impl *impl = d;
 	struct pw_buffer *in, *out;
 	uint32_t i;
 
@@ -225,8 +231,6 @@ static void capture_process(void *d)
 		pw_stream_queue_buffer(impl->capture, in);
 	if (out != NULL)
 		pw_stream_queue_buffer(impl->playback, out);
-
-	pw_stream_trigger_process(impl->playback);
 }
 
 static void param_latency_changed(struct impl *impl, const struct spa_pod *param,
@@ -305,6 +309,7 @@ static void playback_param_changed(void *data, uint32_t id, const struct spa_pod
 static const struct pw_stream_events out_stream_events = {
 	PW_VERSION_STREAM_EVENTS,
 	.destroy = playback_destroy,
+	.process = playback_process,
 	.state_changed = stream_state_changed,
 	.param_changed = playback_param_changed,
 };
@@ -399,12 +404,20 @@ static const struct pw_proxy_events core_proxy_events = {
 
 static void impl_destroy(struct impl *impl)
 {
+	/* disconnect both streams before destroying any of them */
+	if (impl->capture)
+		pw_stream_disconnect(impl->capture);
+	if (impl->playback)
+		pw_stream_disconnect(impl->playback);
+
 	if (impl->capture)
 		pw_stream_destroy(impl->capture);
 	if (impl->playback)
 		pw_stream_destroy(impl->playback);
+
 	if (impl->core && impl->do_disconnect)
 		pw_core_disconnect(impl->core);
+
 	pw_properties_free(impl->capture_props);
 	pw_properties_free(impl->playback_props);
 	free(impl);
@@ -518,6 +531,8 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 		pw_properties_setf(props, PW_KEY_NODE_LINK_GROUP, "loopback-%u-%u", pid, id);
 	if (pw_properties_get(props, PW_KEY_NODE_VIRTUAL) == NULL)
 		pw_properties_set(props, PW_KEY_NODE_VIRTUAL, "true");
+	if (pw_properties_get(props, "resample.prefill") == NULL)
+		pw_properties_set(props, "resample.prefill", "true");
 
 	if ((str = pw_properties_get(props, "capture.props")) != NULL)
 		pw_properties_update_string(impl->capture_props, str, strlen(str));
@@ -533,6 +548,7 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	copy_props(impl, props, PW_KEY_NODE_LATENCY);
 	copy_props(impl, props, PW_KEY_NODE_VIRTUAL);
 	copy_props(impl, props, PW_KEY_MEDIA_NAME);
+	copy_props(impl, props, "resample.prefill");
 
 	if ((str = pw_properties_get(props, PW_KEY_NODE_NAME)) == NULL) {
 		pw_properties_setf(props, PW_KEY_NODE_NAME,
