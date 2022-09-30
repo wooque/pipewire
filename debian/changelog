@@ -1,8 +1,11 @@
-pipewire (0.3.59-1) UNRELEASED; urgency=medium
+pipewire (0.3.59-1) unstable; urgency=medium
 
   * New upstream release
+  * Remove conflict between pipewire-pulse and pulseaudio to allow users
+    to switch from one to the other just by disabling/enabling services.
+      (Closes: #1020330, #1020903)
 
- -- Dylan Aïssi <daissi@debian.org>  Fri, 30 Sep 2022 14:03:43 +0200
+ -- Dylan Aïssi <daissi@debian.org>  Fri, 30 Sep 2022 15:04:20 +0200
 
 pipewire (0.3.58-2) unstable; urgency=medium
 
