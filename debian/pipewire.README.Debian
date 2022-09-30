@@ -13,6 +13,15 @@ Install the pipewire-pulse package and log back in.
 And potentially install the new recommended session manager
 wireplumber instead of the deprecated pipewire-media-session.
 
+PipeWire project recommends [1] to remove the pulseaudio package to prevent
+conflicts in some cases [2] even if both pulseaudio and pipewire-pulse
+services are not running at the same time.
+pipewire-pulse doesn't conflict with pulseaudio at the package level to allow
+users to switch from one to the other just by disabling/enabling services.
+
+[1] https://gitlab.freedesktop.org/pipewire/pipewire/-/wikis/FAQ#should-i-uninstall-everything-pulseaudio
+[2] https://bugs.debian.org/1013276
+
 
 Using pipewire with Bluetooth
 ---------------------------------------------
