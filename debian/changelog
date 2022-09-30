@@ -1,3 +1,9 @@
+pipewire (0.3.59-1) UNRELEASED; urgency=medium
+
+  * New upstream release
+
+ -- Dylan Aïssi <daissi@debian.org>  Fri, 30 Sep 2022 14:03:43 +0200
+
 pipewire (0.3.58-2) unstable; urgency=medium
 
   * Mention to install pipewire-alsa and pipewire-jack
