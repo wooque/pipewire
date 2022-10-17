@@ -33,6 +33,7 @@ override_dh_auto_configure:
 		-Dbluez5-codec-aac=disabled \
 		-Dbluez5-codec-lc3plus=disabled \
 		-Dbluez5-codec-ldac=$(BLUEZ5_CODEC_LDAC) \
+		-Dbluez5-codec-opus=enabled \
 		-Dlibcamera=disabled \
 		-Ddocs=$(DOCS) \
 		-Dffmpeg=disabled \
