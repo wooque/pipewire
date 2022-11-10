@@ -2,6 +2,8 @@ pipewire (0.3.60-1) UNRELEASED; urgency=medium
 
   * New upstream release
       - Improve support of RealTek ALC4080 (Closes: #1021179)
+  * Cherry-pick upstream recommended patch:
+      - b720da77: pulse-server: also advance read pointer in underrun
   * Add libopus-dev in Build-Deps
   * Add liblc3-dev in Build-Deps
   * Be sure the build option for bluez5 aptx codec is enabled
