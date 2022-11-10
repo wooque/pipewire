@@ -1,12 +1,15 @@
-pipewire (0.3.59-2) UNRELEASED; urgency=medium
+pipewire (0.3.60-1) UNRELEASED; urgency=medium
 
+  * New upstream release
   * Add libopus-dev in Build-Deps
   * Add liblc3-dev in Build-Deps
   * Be sure the build option for bluez5 aptx codec is enabled
-  * pipewire-pulse: add pulseaudio-utils in Recommends instead of Suggests (LP: #1993358)
-  * pipewire-alsa: install conf files in the right location (Closes: #1013276, LP: #1975823)
+  * pipewire-pulse: add pulseaudio-utils in Recommends instead
+      of Suggests (LP: #1993358)
+  * pipewire-alsa: install conf files in the right location
+      (Closes: #1013276, LP: #1975823)
 
- -- Dylan Aïssi <daissi@debian.org>  Thu, 10 Nov 2022 14:10:00 +0100
+ -- Dylan Aïssi <daissi@debian.org>  Thu, 10 Nov 2022 14:12:40 +0100
 
 pipewire (0.3.59-1) unstable; urgency=medium
 
