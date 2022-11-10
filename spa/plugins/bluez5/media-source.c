@@ -276,6 +276,7 @@ static int do_reassign_follower(struct spa_loop *loop,
 	struct impl *this = user_data;
 	struct port *port = &this->port;
 
+	set_timers(this);
 	spa_bt_decode_buffer_recover(&port->buffer);
 	return 0;
 }
@@ -567,13 +568,14 @@ static int setup_matching(struct impl *this)
 	return 0;
 }
 
+static int produce_buffer(struct impl *this);
+
 static void media_on_timeout(struct spa_source *source)
 {
 	struct impl *this = source->data;
 	struct port *port = &this->port;
 	uint64_t exp, duration;
 	uint32_t rate;
-	struct spa_io_buffers *io = port->io;
 	uint64_t prev_time, now_time;
 
 	if (this->transport == NULL)
@@ -608,8 +610,11 @@ static void media_on_timeout(struct spa_source *source)
 		this->clock->next_nsec = this->next_time;
 	}
 
-	spa_log_trace(this->log, "%p: %d", this, io->status);
-	io->status = SPA_STATUS_HAVE_DATA;
+	if (port->io) {
+		int status = produce_buffer(this);
+		spa_log_trace(this->log, "%p: io:%d status:%d", this, port->io->status, status);
+	}
+
 	spa_node_call_ready(&this->callbacks, SPA_STATUS_HAVE_DATA);
 
 	set_timeout(this, this->next_time);
@@ -631,10 +636,7 @@ static int transport_start(struct impl *this)
 
 	this->transport_acquired = true;
 
-	if (this->codec->bap)
-		flags = 0;
-	else
-		flags = this->is_duplex ? 0 : MEDIA_CODEC_FLAG_SINK;
+	flags = this->is_duplex ? 0 : MEDIA_CODEC_FLAG_SINK;
 
 	this->codec_data = this->codec->init(this->codec,
 			flags,
@@ -1099,6 +1101,11 @@ static int port_set_format(struct impl *this, struct port *port,
 		if (spa_format_audio_raw_parse(format, &info.info.raw) < 0)
 			return -EINVAL;
 
+		if (info.info.raw.rate == 0 ||
+		    info.info.raw.channels == 0 ||
+		    info.info.raw.channels > SPA_AUDIO_MAX_CHANNELS)
+			return -EINVAL;
+
 		port->frame_size = info.info.raw.channels;
 
 		switch (info.info.raw.format) {
@@ -1342,12 +1349,50 @@ static void process_buffering(struct impl *this)
 	}
 }
 
+static int produce_buffer(struct impl *this)
+{
+	struct buffer *buffer;
+	struct port *port = &this->port;
+	struct spa_io_buffers *io = port->io;
+
+	if (io == NULL)
+		return -EIO;
+
+	/* Return if we already have a buffer */
+	if (io->status == SPA_STATUS_HAVE_DATA)
+		return SPA_STATUS_HAVE_DATA;
+
+	/* Recycle */
+	if (io->buffer_id < port->n_buffers) {
+		recycle_buffer(this, port, io->buffer_id);
+		io->buffer_id = SPA_ID_INVALID;
+	}
+
+	/* Handle buffering */
+	process_buffering(this);
+
+	/* Return if there are no buffers ready to be processed */
+	if (spa_list_is_empty(&port->ready))
+		return SPA_STATUS_OK;
+
+	/* Get the new buffer from the ready list */
+	buffer = spa_list_first(&port->ready, struct buffer, link);
+	spa_list_remove(&buffer->link);
+	buffer->outstanding = true;
+
+	/* Set the new buffer in IO */
+	io->buffer_id = buffer->id;
+	io->status = SPA_STATUS_HAVE_DATA;
+
+	/* Notify we have a buffer ready to be processed */
+	return SPA_STATUS_HAVE_DATA;
+}
+
 static int impl_node_process(void *object)
 {
 	struct impl *this = object;
 	struct port *port;
 	struct spa_io_buffers *io;
-	struct buffer *buffer;
 
 	spa_return_val_if_fail(this != NULL, -EINVAL);
 
@@ -1367,24 +1412,11 @@ static int impl_node_process(void *object)
 		io->buffer_id = SPA_ID_INVALID;
 	}
 
-	/* Handle buffering delay */
-	process_buffering(this);
-
-	/* Return if there are no buffers ready to be processed */
-	if (spa_list_is_empty(&port->ready))
+	/* Follower produces buffers here, driver in timeout */
+	if (this->following)
+		return produce_buffer(this);
+	else
 		return SPA_STATUS_OK;
-
-	/* Get the new buffer from the ready list */
-	buffer = spa_list_first(&port->ready, struct buffer, link);
-	spa_list_remove(&buffer->link);
-	buffer->outstanding = true;
-
-	/* Set the new buffer in IO */
-	io->buffer_id = buffer->id;
-	io->status = SPA_STATUS_HAVE_DATA;
-
-	/* Notify we have a buffer ready to be processed */
-	return SPA_STATUS_HAVE_DATA;
 }
 
 static const struct spa_node_methods impl_node = {
@@ -1452,8 +1484,8 @@ static int impl_clear(struct spa_handle *handle)
 {
 	struct impl *this = (struct impl *) handle;
 	struct port *port = &this->port;
-	if (this->codec_data)
-		this->codec->deinit(this->codec_data);
+
+	do_stop(this);
 	if (this->codec_props && this->codec->clear_props)
 		this->codec->clear_props(this->codec_props);
 	if (this->transport)

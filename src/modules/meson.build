@@ -26,6 +26,8 @@ module_sources = [
   'module-rt.c',
   'module-raop-discover.c',
   'module-raop-sink.c',
+  'module-rtp-source.c',
+  'module-rtp-sink.c',
   'module-session-manager.c',
   'module-zeroconf-discover.c',
   'module-roc-source.c',
@@ -258,6 +260,8 @@ pipewire_module_protocol_pulse_sources = [
   'module-protocol-pulse/modules/module-roc-sink.c',
   'module-protocol-pulse/modules/module-roc-sink-input.c',
   'module-protocol-pulse/modules/module-roc-source.c',
+  'module-protocol-pulse/modules/module-rtp-recv.c',
+  'module-protocol-pulse/modules/module-rtp-send.c',
   'module-protocol-pulse/modules/module-simple-protocol-tcp.c',
   'module-protocol-pulse/modules/module-switch-on-connect.c',
   'module-protocol-pulse/modules/module-tunnel-sink.c',
@@ -481,6 +485,24 @@ summary({'raop-sink (requires OpenSSL)': build_module_raop}, bool_yn: true, sect
 
 roc_lib = cc.find_library('roc', has_headers: ['roc/config.h' ], required: get_option('roc'))
 summary({'ROC': roc_lib.found()}, bool_yn: true, section: 'Streaming between daemons')
+
+pipewire_module_rtp_source = shared_library('pipewire-module-rtp-source',
+  [ 'module-rtp-source.c' ],
+  include_directories : [configinc],
+  install : true,
+  install_dir : modules_install_dir,
+  install_rpath: modules_install_dir,
+  dependencies : [mathlib, dl_lib, rt_lib, pipewire_dep],
+)
+
+pipewire_module_rtp_sink = shared_library('pipewire-module-rtp-sink',
+  [ 'module-rtp-sink.c' ],
+  include_directories : [configinc],
+  install : true,
+  install_dir : modules_install_dir,
+  install_rpath: modules_install_dir,
+  dependencies : [mathlib, dl_lib, rt_lib, pipewire_dep],
+)
 
 build_module_roc = roc_lib.found()
 if build_module_roc

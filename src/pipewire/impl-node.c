@@ -158,19 +158,6 @@ static void remove_node(struct pw_impl_node *this)
 	this->rt.driver_target.node = NULL;
 }
 
-static int
-do_node_remove(struct spa_loop *loop,
-	       bool async, uint32_t seq, const void *data, size_t size, void *user_data)
-{
-	struct pw_impl_node *this = user_data;
-	if (this->source.loop != NULL) {
-		spa_loop_remove_source(loop, &this->source);
-		remove_node(this);
-	}
-	this->added = false;
-	return 0;
-}
-
 static void node_deactivate(struct pw_impl_node *this)
 {
 	struct pw_impl_port *port;
@@ -185,7 +172,6 @@ static void node_deactivate(struct pw_impl_node *this)
 		spa_list_for_each(link, &port->links, output_link)
 			pw_impl_link_deactivate(link);
 	}
-	pw_loop_invoke(this->data_loop, do_node_remove, 1, NULL, 0, true, this);
 }
 
 static int idle_node(struct pw_impl_node *this)
@@ -354,6 +340,19 @@ do_node_add(struct spa_loop *loop,
 	return 0;
 }
 
+static int
+do_node_remove(struct spa_loop *loop,
+	       bool async, uint32_t seq, const void *data, size_t size, void *user_data)
+{
+	struct pw_impl_node *this = user_data;
+	if (this->source.loop != NULL) {
+		spa_loop_remove_source(loop, &this->source);
+		remove_node(this);
+	}
+	this->added = false;
+	return 0;
+}
+
 static void node_update_state(struct pw_impl_node *node, enum pw_node_state state, int res, char *error)
 {
 	struct impl *impl = SPA_CONTAINER_OF(node, struct impl, this);
@@ -364,19 +363,28 @@ static void node_update_state(struct pw_impl_node *node, enum pw_node_state stat
 		pw_log_debug("%p: start node driving:%d driver:%d added:%d", node,
 				node->driving, node->driver, node->added);
 
+		if (res >= 0) {
+			pw_loop_invoke(node->data_loop, do_node_add, 1, NULL, 0, true, node);
+		}
 		if (node->driving && node->driver) {
 			res = spa_node_send_command(node->node,
 				&SPA_NODE_COMMAND_INIT(SPA_NODE_COMMAND_Start));
 			if (res < 0) {
 				state = PW_NODE_STATE_ERROR;
 				error = spa_aprintf("Start error: %s", spa_strerror(res));
+				pw_loop_invoke(node->data_loop, do_node_remove, 1, NULL, 0, true, node);
 			}
 		}
 		if (res >= 0) {
-			pw_loop_invoke(node->data_loop, do_node_add, 1, NULL, 0, true, node);
 			/* now activate the inputs */
 			node_activate_inputs(node);
 		}
+		break;
+	case PW_NODE_STATE_IDLE:
+	case PW_NODE_STATE_SUSPENDED:
+	case PW_NODE_STATE_ERROR:
+		if (state != PW_NODE_STATE_IDLE || impl->pause_on_idle)
+			pw_loop_invoke(node->data_loop, do_node_remove, 1, NULL, 0, true, node);
 		break;
 	default:
 		break;
@@ -1624,8 +1632,13 @@ static int node_ready(void *data, int status)
 	struct pw_node_target *t;
 	struct pw_impl_port *p;
 
-	pw_log_trace_fp("%p: ready driver:%d exported:%d %p status:%d", node,
-			node->driver, node->exported, driver, status);
+	pw_log_trace_fp("%p: ready driver:%d exported:%d %p status:%d added:%d", node,
+			node->driver, node->exported, driver, status, node->added);
+
+	if (!node->added) {
+		pw_log_warn("%p: ready non-active node", node);
+		return -EIO;
+	}
 
 	if (SPA_UNLIKELY(node == driver)) {
 		struct pw_node_activation *a = node->rt.activation;
@@ -1954,8 +1967,8 @@ static void result_node_params(void *data, int seq, int res, uint32_t type, cons
 			d->callback(d->data, seq, r->id, r->index, r->next, r->param);
 			if (d->cache) {
 				if (d->count++ == 0)
-					pw_param_add(&impl->pending_list, r->id, NULL);
-				pw_param_add(&impl->pending_list, r->id, r->param);
+					pw_param_add(&impl->pending_list, seq, r->id, NULL);
+				pw_param_add(&impl->pending_list, seq, r->id, r->param);
 			}
 		}
 		break;
@@ -2007,10 +2020,10 @@ int pw_impl_node_for_each_param(struct pw_impl_node *node,
 		result.next = 0;
 
 		spa_list_for_each(p, &impl->param_list, link) {
-			result.index = result.next++;
 			if (p->id != param_id)
 				continue;
 
+			result.index = result.next++;
 			if (result.index < index)
 				continue;
 
@@ -2039,7 +2052,7 @@ int pw_impl_node_for_each_param(struct pw_impl_node *node,
 		spa_hook_remove(&listener);
 
 		if (user_data.cache) {
-			pw_param_update(&impl->param_list, &impl->pending_list);
+			pw_param_update(&impl->param_list, &impl->pending_list, 0, NULL);
 			pi->user = 1;
 		}
 	}

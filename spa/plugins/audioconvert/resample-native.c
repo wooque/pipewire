@@ -66,6 +66,7 @@ static inline double window_blackman(double x, double n_taps)
 		(alpha / 2.0) * cos(2.0 * x);
 	return r;
 }
+
 static inline double window_cosh(double x, double n_taps)
 {
 	double r;
@@ -80,7 +81,7 @@ static inline double window_cosh(double x, double n_taps)
 	return r;
 }
 
-#define window window_cosh
+#define window (1 ? window_cosh : window_blackman)
 
 static int build_filter(float *taps, uint32_t stride, uint32_t n_taps, uint32_t n_phases, double cutoff)
 {
@@ -125,11 +126,10 @@ static struct resample_info resample_table[] =
 #define MATCH_CPU_FLAGS(a,b)	((a) == 0 || ((a) & (b)) == a)
 static const struct resample_info *find_resample_info(uint32_t format, uint32_t cpu_flags)
 {
-	size_t i;
-	for (i = 0; i < SPA_N_ELEMENTS(resample_table); i++) {
-		if (resample_table[i].format == format &&
-		    MATCH_CPU_FLAGS(resample_table[i].cpu_flags, cpu_flags))
-			return &resample_table[i];
+	SPA_FOR_EACH_ELEMENT_VAR(resample_table, t) {
+		if (t->format == format &&
+		    MATCH_CPU_FLAGS(t->cpu_flags, cpu_flags))
+			return t;
 	}
 	return NULL;
 }

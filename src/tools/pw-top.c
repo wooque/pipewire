@@ -62,8 +62,10 @@ struct measurement {
 
 struct node {
 	struct spa_list link;
+	struct data *data;
 	uint32_t id;
 	char name[MAX_NAME+1];
+	enum pw_node_state state;
 	struct measurement measurement;
 	struct driver info;
 	struct node *driver;
@@ -73,6 +75,7 @@ struct node {
 	char format[MAX_FORMAT+1];
 	struct pw_proxy *proxy;
 	struct spa_hook proxy_listener;
+	unsigned int inactive:1;
 	struct spa_hook object_listener;
 };
 
@@ -95,6 +98,7 @@ struct data {
 	int n_nodes;
 	struct spa_list node_list;
 	uint32_t generation;
+	unsigned pending_refresh:1;
 
 	WINDOW *win;
 };
@@ -159,11 +163,28 @@ static const struct pw_proxy_events proxy_events = {
 	.destroy = on_node_destroy,
 };
 
+static void do_refresh(struct data *d);
+
+static void node_info(void *data, const struct pw_node_info *info)
+{
+	struct node *n = data;
+
+	if (n->state != info->state) {
+		n->state = info->state;
+		do_refresh(n->data);
+	}
+}
+
 static void node_param(void *data, int seq,
 			uint32_t id, uint32_t index, uint32_t next,
 			const struct spa_pod *param)
 {
 	struct node *n = data;
+
+	if (param == NULL) {
+		spa_zero(n->format);
+		goto done;
+	}
 
 	switch (id) {
 	case SPA_PARAM_Format:
@@ -177,20 +198,33 @@ static void node_param(void *data, int seq,
 			switch(media_subtype) {
 			case SPA_MEDIA_SUBTYPE_raw:
 			{
-				struct spa_audio_info_raw info;
+				struct spa_audio_info_raw info = { 0 };
 				if (spa_format_audio_raw_parse(param, &info) >= 0) {
 					snprintf(n->format, sizeof(n->format), "%6.6s %d %d",
-						spa_debug_type_find_short_name(spa_type_audio_format, info.format),
+						spa_debug_type_find_short_name(
+							spa_type_audio_format, info.format),
 						info.channels, info.rate);
 				}
 				break;
 			}
 			case SPA_MEDIA_SUBTYPE_dsd:
 			{
-				struct spa_audio_info_dsd info;
+				struct spa_audio_info_dsd info = { 0 };
 				if (spa_format_audio_dsd_parse(param, &info) >= 0) {
 					snprintf(n->format, sizeof(n->format), "DSD%d %d ",
 						8 * info.rate / 44100, info.channels);
+
+				}
+				break;
+			}
+			case SPA_MEDIA_SUBTYPE_iec958:
+			{
+				struct spa_audio_info_iec958 info = { 0 };
+				if (spa_format_audio_iec958_parse(param, &info) >= 0) {
+					snprintf(n->format, sizeof(n->format), "IEC958 %s %d",
+						spa_debug_type_find_short_name(
+							spa_type_audio_iec958_codec, info.codec),
+						info.rate);
 
 				}
 				break;
@@ -201,10 +235,28 @@ static void node_param(void *data, int seq,
 			switch(media_subtype) {
 			case SPA_MEDIA_SUBTYPE_raw:
 			{
-				struct spa_video_info_raw info;
+				struct spa_video_info_raw info = { 0 };
 				if (spa_format_video_raw_parse(param, &info) >= 0) {
 					snprintf(n->format, sizeof(n->format), "%6.6s %dx%d",
 						spa_debug_type_find_short_name(spa_type_video_format, info.format),
+						info.size.width, info.size.height);
+				}
+				break;
+			}
+			case SPA_MEDIA_SUBTYPE_mjpg:
+			{
+				struct spa_video_info_mjpg info = { 0 };
+				if (spa_format_video_mjpg_parse(param, &info) >= 0) {
+					snprintf(n->format, sizeof(n->format), "MJPG %dx%d",
+						info.size.width, info.size.height);
+				}
+				break;
+			}
+			case SPA_MEDIA_SUBTYPE_h264:
+			{
+				struct spa_video_info_h264 info = { 0 };
+				if (spa_format_video_h264_parse(param, &info) >= 0) {
+					snprintf(n->format, sizeof(n->format), "H264 %dx%d",
 						info.size.width, info.size.height);
 				}
 				break;
@@ -224,10 +276,13 @@ static void node_param(void *data, int seq,
 	default:
 		break;
 	}
+done:
+	do_refresh(n->data);
 }
 
 static const struct pw_node_events node_events = {
 	PW_VERSION_NODE,
+	.info = node_info,
 	.param = node_param,
 };
 
@@ -242,6 +297,7 @@ static struct node *add_node(struct data *d, uint32_t id, const char *name)
 		strncpy(n->name, name, MAX_NAME);
 	else
 		snprintf(n->name, sizeof(n->name), "%u", id);
+	n->data = d;
 	n->id = id;
 	n->driver = n;
 	n->proxy = pw_registry_bind(d->registry, id, PW_TYPE_INTERFACE_Node, PW_VERSION_NODE, 0);
@@ -258,6 +314,7 @@ static struct node *add_node(struct data *d, uint32_t id, const char *name)
 	}
 	spa_list_append(&d->node_list, &n->link);
 	d->n_nodes++;
+	d->pending_refresh = true;
 
 	return n;
 }
@@ -268,6 +325,7 @@ static void remove_node(struct data *d, struct node *n)
 		pw_proxy_destroy(n->proxy);
 	spa_list_remove(&n->link);
 	d->n_nodes--;
+	d->pending_refresh = true;
 	free(n);
 }
 
@@ -332,7 +390,10 @@ static int process_follower_block(struct data *d, const struct spa_pod *pod, str
 		return -ENOENT;
 
 	n->measurement = m;
-	n->driver = point->driver;
+	if (n->driver != point->driver) {
+		n->driver = point->driver;
+		d->pending_refresh = true;
+	}
 	n->generation = d->generation;
 	if (m.status != 3) {
 		n->errors++;
@@ -342,9 +403,9 @@ static int process_follower_block(struct data *d, const struct spa_pod *pod, str
 	return 0;
 }
 
-static const char *print_time(char *buf, size_t len, uint64_t val)
+static const char *print_time(char *buf, bool active, size_t len, uint64_t val)
 {
-	if (val == (uint64_t)-1)
+	if (val == (uint64_t)-1 || !active)
 		snprintf(buf, len, "   --- ");
 	else if (val == (uint64_t)-2)
 		snprintf(buf, len, "   +++ ");
@@ -357,9 +418,9 @@ static const char *print_time(char *buf, size_t len, uint64_t val)
 	return buf;
 }
 
-static const char *print_perc(char *buf, size_t len, uint64_t val, float quantum)
+static const char *print_perc(char *buf, bool active, size_t len, uint64_t val, float quantum)
 {
-	if (val == (uint64_t)-1) {
+	if (val == (uint64_t)-1 || !active) {
 		snprintf(buf, len, " --- ");
 	} else if (val == (uint64_t)-2) {
 		snprintf(buf, len, " +++ ");
@@ -368,6 +429,23 @@ static const char *print_perc(char *buf, size_t len, uint64_t val, float quantum
 		snprintf(buf, len, "%5.2f", quantum == 0.0f ? 0.0f : frac/quantum);
 	}
 	return buf;
+}
+
+static const char *state_as_string(enum pw_node_state state)
+{
+	switch (state) {
+	case PW_NODE_STATE_ERROR:
+		return "E";
+	case PW_NODE_STATE_CREATING:
+		return "C";
+	case PW_NODE_STATE_SUSPENDED:
+		return "S";
+	case PW_NODE_STATE_IDLE:
+		return "I";
+	case PW_NODE_STATE_RUNNING:
+		return "R";
+	}
+	return "!";
 }
 
 static void print_node(struct data *d, struct driver *i, struct node *n, int y)
@@ -379,8 +457,13 @@ static void print_node(struct data *d, struct driver *i, struct node *n, int y)
 	uint64_t waiting, busy;
 	float quantum;
 	struct spa_fraction frac;
+	bool active;
 
-	if (n->driver == n)
+	active = n->state == PW_NODE_STATE_RUNNING || n->state == PW_NODE_STATE_IDLE;
+
+	if (!active)
+		frac = SPA_FRACTION(0, 0);
+	else if (n->driver == n)
 		frac = SPA_FRACTION((uint32_t)(i->clock.duration * i->clock.rate.num), i->clock.rate.denom);
 	else
 		frac = SPA_FRACTION(n->measurement.latency.num, n->measurement.latency.denom);
@@ -405,17 +488,26 @@ static void print_node(struct data *d, struct driver *i, struct node *n, int y)
 		busy = -1;
 
 	mvwprintw(d->win, y, 0, "%s %4.1u %6.1u %6.1u %s %s %s %s  %3.1u %16.16s %s%s",
-			n->measurement.status != 3 ? "!" : " ",
+			state_as_string(n->state),
 			n->id,
 			frac.num, frac.denom,
-			print_time(buf1, 64, waiting),
-			print_time(buf2, 64, busy),
-			print_perc(buf3, 64, waiting, quantum),
-			print_perc(buf4, 64, busy, quantum),
+			print_time(buf1, active, 64, waiting),
+			print_time(buf2, active, 64, busy),
+			print_perc(buf3, active, 64, waiting, quantum),
+			print_perc(buf4, active, 64, busy, quantum),
 			i->xrun_count + n->errors,
-			n->measurement.status != 3 ? "" : n->format,
+			active ? n->format : "",
 			n->driver == n ? "" : " + ",
 			n->name);
+}
+
+static void clear_node(struct node *n)
+{
+	n->driver = n;
+	spa_zero(n->measurement);
+	spa_zero(n->info);
+	n->errors = 0;
+	n->last_error_status = 0;
 }
 
 static void do_refresh(struct data *d)
@@ -438,14 +530,8 @@ static void do_refresh(struct data *d)
 			break;
 
 		spa_list_for_each(f, &d->node_list, link) {
-			if (d->generation > f->generation + 2) {
-				f->driver = f;
-				spa_zero(f->measurement);
-				spa_zero(f->info);
-				spa_zero(f->format);
-				f->errors = 0;
-				f->last_error_status = 0;
-			}
+			if (d->generation > f->generation + 22)
+				clear_node(f);
 
 			if (f->driver != n || f == n)
 				continue;
@@ -462,6 +548,7 @@ static void do_refresh(struct data *d)
 	wclrtobot(d->win);
 
 	wrefresh(d->win);
+	d->pending_refresh = false;
 }
 
 static void do_timeout(void *data, uint64_t expirations)
@@ -507,6 +594,8 @@ static void profiler_profile(void *data, const struct spa_pod *pod)
 		if (res < 0)
 			continue;
 	}
+	if (d->pending_refresh)
+		do_refresh(d);
 }
 
 static const struct pw_profiler_events profiler_events = {
@@ -545,7 +634,8 @@ static void registry_event_global(void *data, uint32_t id,
 		d->profiler = proxy;
 		pw_proxy_add_object_listener(proxy, &d->profiler_listener, &profiler_events, d);
 	}
-
+	if (d->pending_refresh)
+		do_refresh(d);
 	return;
 
 error_proxy:
@@ -559,6 +649,8 @@ static void registry_event_global_remove(void *data, uint32_t id)
 	struct node *n;
 	if ((n = find_node(d, id)) != NULL)
 		remove_node(d, n);
+	if (d->pending_refresh)
+		do_refresh(d);
 }
 
 static const struct pw_registry_events registry_events = {
@@ -586,8 +678,9 @@ static void on_core_done(void *_data, uint32_t id, int seq)
 		if (d->profiler == NULL) {
 			pw_log_error("no Profiler Interface found, please load one in the server");
 			pw_main_loop_quit(d->loop);
-		} else
+		} else {
 			do_refresh(d);
+		}
 	}
 }
 
@@ -612,7 +705,7 @@ static void show_help(const char *name, bool error)
 		name);
 }
 
-static void terminal_start()
+static void terminal_start(void)
 {
 	initscr();
 	cbreak();
@@ -620,7 +713,7 @@ static void terminal_start()
 	refresh();
 }
 
-static void terminal_stop()
+static void terminal_stop(void)
 {
 	endwin();
 }

@@ -123,7 +123,9 @@ typedef struct {
 	struct spa_hook stream_listener;
 
 	int64_t delay;
-	uint64_t now;
+	uint64_t transfered;
+	uint64_t buffered;
+	int64_t now;
 	uintptr_t seq;
 
 	struct spa_audio_info_raw format;
@@ -163,21 +165,15 @@ static int check_active(snd_pcm_ioplug_t *io)
 static int update_active(snd_pcm_ioplug_t *io)
 {
 	snd_pcm_pipewire_t *pw = io->private_data;
-	bool active;
+	pw->active = check_active(io);
+	uint64_t val;
 
-	active = check_active(io);
+	if (pw->active || pw->error < 0)
+		spa_system_eventfd_write(pw->system, io->poll_fd, 1);
+	else
+		spa_system_eventfd_read(pw->system, io->poll_fd, &val);
 
-	if (pw->active != active) {
-		uint64_t val;
-
-		pw->active = active;
-
-		if (active)
-			spa_system_eventfd_write(pw->system, io->poll_fd, 1);
-		else
-			spa_system_eventfd_read(pw->system, io->poll_fd, &val);
-	}
-	return active;
+	return pw->active;
 }
 
 static void snd_pcm_pipewire_free(snd_pcm_pipewire_t *pw)
@@ -233,8 +229,10 @@ static int snd_pcm_pipewire_poll_revents(snd_pcm_ioplug_t *io,
 		return pw->error;
 
 	*revents = pfds[0].revents & ~(POLLIN | POLLOUT);
-	if (pfds[0].revents & POLLIN && check_active(io))
+	if (pfds[0].revents & POLLIN && check_active(io)) {
 		*revents |= (io->stream == SND_PCM_STREAM_PLAYBACK) ? POLLOUT : POLLIN;
+		update_active(io);
+	}
 
 	return 0;
 }
@@ -266,7 +264,7 @@ static int snd_pcm_pipewire_delay(snd_pcm_ioplug_t *io, snd_pcm_sframes_t *delay
 	do {
 		seq1 = SEQ_READ(pw->seq);
 
-		delay = pw->delay;
+		delay = pw->delay + pw->transfered;
 		now = pw->now;
 		if (io->stream == SND_PCM_STREAM_PLAYBACK)
 			avail = snd_pcm_ioplug_hw_avail(io, pw->hw_ptr, io->appl_ptr);
@@ -450,9 +448,8 @@ static void on_stream_process(void *data)
 	pw_stream_get_time_n(pw->stream, &pwt, sizeof(pwt));
 
 	delay = pwt.delay;
-	if (pwt.rate.num != 0) {
+	if (pwt.rate.num != 0)
 		delay = delay * io->rate * pwt.rate.num / pwt.rate.denom;
-	}
 
 	before = hw_avail = snd_pcm_ioplug_hw_avail(io, pw->hw_ptr, io->appl_ptr);
 
@@ -467,12 +464,20 @@ static void on_stream_process(void *data)
 
 	SEQ_WRITE(pw->seq);
 
+	if (pw->now != pwt.now) {
+		pw->transfered = pw->buffered;
+		pw->buffered = 0;
+	}
+
 	xfer = snd_pcm_pipewire_process(pw, b, &hw_avail, want);
 
 	pw->delay = delay;
 	/* the buffer is now queued in the stream and consumed */
 	if (io->stream == SND_PCM_STREAM_PLAYBACK)
-		pw->delay += xfer;
+		pw->transfered += xfer;
+
+	/* more then requested data transfered, use them in next iteration */
+	pw->buffered = (want == 0 || pw->transfered < want) ?  0 : (pw->transfered % want);
 
 	pw->now = pwt.now;
 	SEQ_WRITE(pw->seq);
@@ -563,11 +568,6 @@ static int snd_pcm_pipewire_prepare(snd_pcm_ioplug_t *io)
 		goto done;
 	pw->hw_params_changed = false;
 
-	if (pw->stream != NULL) {
-		pw_stream_destroy(pw->stream);
-		pw->stream = NULL;
-	}
-
 	props = pw_properties_new(NULL, NULL);
 	if (props == NULL)
 		goto error;
@@ -593,13 +593,20 @@ static int snd_pcm_pipewire_prepare(snd_pcm_ioplug_t *io)
 		pw_properties_get(props, PW_KEY_MEDIA_ROLE) == NULL)
 		pw_properties_setf(props, PW_KEY_MEDIA_ROLE, "%s", pw->role);
 
+	params[0] = spa_format_audio_raw_build(&b, SPA_PARAM_EnumFormat, &pw->format);
+
+	if (pw->stream != NULL) {
+		pw_stream_update_properties(pw->stream, &props->dict);
+		pw_stream_update_params(pw->stream, params, 1);
+		goto done;
+	}
+
 	pw->stream = pw_stream_new(pw->core, pw->node_name, props);
 	if (pw->stream == NULL)
 		goto error;
 
 	pw_stream_add_listener(pw->stream, &pw->stream_listener, &stream_events, pw);
 
-	params[0] = spa_format_audio_raw_build(&b, SPA_PARAM_EnumFormat, &pw->format);
 	pw->error = 0;
 
 	pw_stream_connect(pw->stream,
@@ -867,10 +874,9 @@ static const struct chmap_info chmap_info[] = {
 
 static enum snd_pcm_chmap_position channel_to_chmap(enum spa_audio_channel channel)
 {
-	uint32_t i;
-	for (i = 0; i < SPA_N_ELEMENTS(chmap_info); i++)
-		if (chmap_info[i].channel == channel)
-			return chmap_info[i].pos;
+	SPA_FOR_EACH_ELEMENT_VAR(chmap_info, info)
+		if (info->channel == channel)
+			return info->pos;
 	return SND_CHMAP_UNKNOWN;
 }
 

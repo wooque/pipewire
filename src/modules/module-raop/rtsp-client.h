@@ -57,6 +57,7 @@ struct pw_rtsp_client * pw_rtsp_client_new(struct pw_loop *main_loop,
 void pw_rtsp_client_destroy(struct pw_rtsp_client *client);
 
 void *pw_rtsp_client_get_user_data(struct pw_rtsp_client *client);
+const char *pw_rtsp_client_get_url(struct pw_rtsp_client *client);
 
 void pw_rtsp_client_add_listener(struct pw_rtsp_client *client,
 		struct spa_hook *listener,
@@ -74,13 +75,13 @@ int pw_rtsp_client_get_local_ip(struct pw_rtsp_client *client,
 int pw_rtsp_client_url_send(struct pw_rtsp_client *client, const char *url,
 		const char *cmd, const struct spa_dict *headers,
 		const char *content_type, const void *content, size_t content_length,
-		void (*reply) (void *user_data, int status, const struct spa_dict *headers),
+		int (*reply) (void *user_data, int status, const struct spa_dict *headers),
 		void *user_data);
 
 int pw_rtsp_client_send(struct pw_rtsp_client *client,
 		const char *cmd, const struct spa_dict *headers,
 		const char *content_type, const char *content,
-		void (*reply) (void *user_data, int status, const struct spa_dict *headers),
+		int (*reply) (void *user_data, int status, const struct spa_dict *headers),
 		void *user_data);
 
 

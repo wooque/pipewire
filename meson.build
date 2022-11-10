@@ -1,5 +1,5 @@
 project('pipewire', ['c' ],
-  version : '0.3.59',
+  version : '0.3.60',
   license : [ 'MIT', 'LGPL-2.1-or-later', 'GPL-2.0-only' ],
   meson_version : '>= 0.59.0',
   default_options : [ 'warning_level=3',
@@ -67,6 +67,7 @@ cc = meson.get_compiler('c')
 
 common_flags = [
   '-fvisibility=hidden',
+  '-fno-strict-aliasing',
   '-Werror=suggest-attribute=format',
   '-Wsign-compare',
   '-Wpointer-arith',
@@ -97,7 +98,7 @@ have_cpp = add_languages('cpp', native: false, required : false)
 
 if have_cpp
   cxx = meson.get_compiler('cpp')
-  cxx_flags = common_flags
+  cxx_flags = common_flags + [ '-Wno-c99-designator' ]
   add_project_arguments(cxx.get_supported_arguments(cxx_flags), language: 'cpp')
 endif
 
@@ -259,10 +260,10 @@ cdata.set('HAVE_DBUS', dbus_dep.found())
 sdl_dep = dependency('sdl2', required : get_option('sdl2'))
 summary({'SDL2 (video examples)': sdl_dep.found()}, bool_yn: true, section: 'Misc dependencies')
 drm_dep = dependency('libdrm', required : false)
-readline_dep = dependency('readline', required : false)
+readline_dep = dependency('readline', required : get_option('readline'))
 
 if not readline_dep.found()
-  readline_dep = cc.find_library('readline', required: false)
+  readline_dep = cc.find_library('readline', required : get_option('readline'))
 endif
 
 summary({'readline (for pw-cli)': readline_dep.found()}, bool_yn: true, section: 'Misc dependencies')

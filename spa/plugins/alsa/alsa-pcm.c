@@ -638,12 +638,10 @@ static const struct format_info format_info[] = {
 
 static snd_pcm_format_t spa_format_to_alsa(uint32_t format, bool *planar)
 {
-	size_t i;
-
-	for (i = 0; i < SPA_N_ELEMENTS(format_info); i++) {
-		*planar = format_info[i].spa_pformat == format;
-		if (format_info[i].spa_format == format || *planar)
-			return format_info[i].format;
+	SPA_FOR_EACH_ELEMENT_VAR(format_info, i) {
+		*planar = i->spa_pformat == format;
+		if (i->spa_format == format || *planar)
+			return i->format;
 	}
 	return SND_PCM_FORMAT_UNKNOWN;
 }
@@ -969,7 +967,7 @@ static int enum_pcm_formats(struct state *state, uint32_t index, uint32_t *next,
 		struct spa_pod **result, struct spa_pod_builder *b)
 {
 	int res, err;
-	size_t i, j;
+	size_t j;
 	snd_pcm_t *hndl;
 	snd_pcm_hw_params_t *params;
 	struct spa_pod_frame f[2];
@@ -1020,8 +1018,10 @@ static int enum_pcm_formats(struct state *state, uint32_t index, uint32_t *next,
 	spa_pod_builder_push_choice(b, &f[1], SPA_CHOICE_None, 0);
 	choice = (struct spa_pod_choice*)spa_pod_builder_frame(b, &f[1]);
 
-	for (i = 1, j = 0; i < SPA_N_ELEMENTS(format_info); i++) {
-		const struct format_info *fi = &format_info[i];
+	j = 0;
+	SPA_FOR_EACH_ELEMENT_VAR(format_info, fi) {
+		if (fi->format == SND_PCM_FORMAT_UNKNOWN)
+			continue;
 
 		if (snd_pcm_format_mask_test(fmask, fi->format)) {
 			if ((snd_pcm_access_mask_test(amask, SND_PCM_ACCESS_MMAP_NONINTERLEAVED) ||
@@ -1775,7 +1775,7 @@ recover:
 	state->alsa_started = false;
 
 	if (state->stream == SND_PCM_STREAM_PLAYBACK)
-		spa_alsa_silence(state, state->start_delay + state->threshold * 2 + state->headroom);
+		spa_alsa_silence(state, state->start_delay + state->threshold + state->headroom);
 
 	return do_start(state);
 }
@@ -2355,7 +2355,7 @@ static int handle_play(struct state *state, uint64_t current_time,
 {
 	int res;
 
-	if (SPA_UNLIKELY(delay > target + state->max_error)) {
+	if (state->alsa_started && SPA_UNLIKELY(delay > target + state->max_error)) {
 		spa_log_trace(state->log, "%p: early wakeup %lu %lu", state, delay, target);
 		if (delay > target * 3)
 			delay = target * 3;
@@ -2558,10 +2558,10 @@ int spa_alsa_start(struct state *state)
 	state->alsa_recovering = false;
 	state->alsa_started = false;
 
+	/* start capture now, playback will start after first write */
 	if (state->stream == SND_PCM_STREAM_PLAYBACK)
-		spa_alsa_silence(state, state->start_delay + state->threshold * 2 + state->headroom);
-
-	if ((err = do_start(state)) < 0)
+		spa_alsa_silence(state, state->start_delay + state->threshold + state->headroom);
+	else if ((err = do_start(state)) < 0)
 		return err;
 
 	set_timers(state);

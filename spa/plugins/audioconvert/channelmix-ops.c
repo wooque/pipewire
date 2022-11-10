@@ -30,6 +30,7 @@
 #include <spa/support/cpu.h>
 #include <spa/support/log.h>
 #include <spa/utils/defs.h>
+#include <spa/debug/types.h>
 
 #include "channelmix-ops.h"
 #include "hilbert.h"
@@ -69,8 +70,17 @@ static const struct channelmix_info {
 	MAKE(4, MASK_QUAD, 1, MASK_MONO, channelmix_f32_4_1_c),
 	MAKE(4, MASK_3_1, 1, MASK_MONO, channelmix_f32_4_1_c),
 	MAKE(2, MASK_STEREO, 4, MASK_QUAD, channelmix_f32_2_4_c),
+#if defined (HAVE_SSE)
+	MAKE(2, MASK_STEREO, 4, MASK_3_1, channelmix_f32_2_3p1_sse, SPA_CPU_FLAG_SSE),
+#endif
 	MAKE(2, MASK_STEREO, 4, MASK_3_1, channelmix_f32_2_3p1_c),
+#if defined (HAVE_SSE)
+	MAKE(2, MASK_STEREO, 6, MASK_5_1, channelmix_f32_2_5p1_sse, SPA_CPU_FLAG_SSE),
+#endif
 	MAKE(2, MASK_STEREO, 6, MASK_5_1, channelmix_f32_2_5p1_c),
+#if defined (HAVE_SSE)
+	MAKE(2, MASK_STEREO, 8, MASK_7_1, channelmix_f32_2_7p1_sse, SPA_CPU_FLAG_SSE),
+#endif
 	MAKE(2, MASK_STEREO, 8, MASK_7_1, channelmix_f32_2_7p1_c),
 #if defined (HAVE_SSE)
 	MAKE(4, MASK_3_1, 2, MASK_STEREO, channelmix_f32_3p1_2_sse, SPA_CPU_FLAG_SSE),
@@ -95,7 +105,7 @@ static const struct channelmix_info {
 	MAKE(8, MASK_7_1, 4, MASK_3_1, channelmix_f32_7p1_3p1_c),
 
 #if defined (HAVE_SSE)
-	MAKE(ANY, 0, ANY, 0, channelmix_f32_n_m_sse),
+	MAKE(ANY, 0, ANY, 0, channelmix_f32_n_m_sse, SPA_CPU_FLAG_SSE),
 #endif
 	MAKE(ANY, 0, ANY, 0, channelmix_f32_n_m_c),
 };
@@ -108,19 +118,18 @@ static const struct channelmix_info {
 static const struct channelmix_info *find_channelmix_info(uint32_t src_chan, uint64_t src_mask,
 		uint32_t dst_chan, uint64_t dst_mask, uint32_t cpu_flags)
 {
-	size_t i;
-	for (i = 0; i < SPA_N_ELEMENTS(channelmix_table); i++) {
-		if (!MATCH_CPU_FLAGS(channelmix_table[i].cpu_flags, cpu_flags))
+	SPA_FOR_EACH_ELEMENT_VAR(channelmix_table, info) {
+		if (!MATCH_CPU_FLAGS(info->cpu_flags, cpu_flags))
 			continue;
 
 		if (src_chan == dst_chan && src_mask == dst_mask)
-			return &channelmix_table[i];
+			return info;
 
-		if (MATCH_CHAN(channelmix_table[i].src_chan, src_chan) &&
-		    MATCH_CHAN(channelmix_table[i].dst_chan, dst_chan) &&
-		    MATCH_MASK(channelmix_table[i].src_mask, src_mask) &&
-		    MATCH_MASK(channelmix_table[i].dst_mask, dst_mask))
-			return &channelmix_table[i];
+		if (MATCH_CHAN(info->src_chan, src_chan) &&
+		    MATCH_CHAN(info->dst_chan, dst_chan) &&
+		    MATCH_MASK(info->src_mask, src_mask) &&
+		    MATCH_MASK(info->dst_mask, dst_mask))
+			return info;
 	}
 	return NULL;
 }
@@ -302,6 +311,7 @@ static int make_matrix(struct channelmix *mix)
 				_MATRIX(SL,RL) += 1.0f;
 				_MATRIX(SR,RR) += 1.0f;
 			}
+			keep &= ~SIDE;
 		} else if (dst_mask & STEREO) {
 			spa_log_debug(mix->log, "assign RL+RR to FL+FR (%f)", slev);
 			if (matrix_encoding == MATRIX_DOLBY) {
@@ -339,6 +349,7 @@ static int make_matrix(struct channelmix *mix)
 				_MATRIX(RL,SL) += 1.0f;
 				_MATRIX(RR,SR) += 1.0f;
 			}
+			keep &= ~REAR;
 		} else if (dst_mask & _MASK(RC)) {
 			spa_log_debug(mix->log, "assign SL+SR to RC (%f)", SQRT1_2);
 			_MATRIX(RC,SL)+= SQRT1_2;
@@ -474,10 +485,33 @@ static int make_matrix(struct channelmix *mix)
 			spa_log_debug(mix->log, "won't produce SIDE");
 		}
 	}
+	if (unassigned & _MASK(RC)) {
+		if ((src_mask & REAR) == REAR) {
+			spa_log_debug(mix->log, "produce RC from REAR (%f)", 0.5f);
+			_MATRIX(RC,RL) += 0.5f;
+			_MATRIX(RC,RR) += 0.5f;
+		} else if ((src_mask & SIDE) == SIDE) {
+			spa_log_debug(mix->log, "produce RC from SIDE (%f)", 0.5f);
+			_MATRIX(RC,SL) += 0.5f;
+			_MATRIX(RC,SR) += 0.5f;
+		} else if ((src_mask & STEREO) == STEREO) {
+			spa_log_debug(mix->log, "produce RC from STEREO (%f)", 0.5f);
+			_MATRIX(RC,FL) += 0.5f;
+			_MATRIX(RC,FR) += 0.5f;
+		} else if ((src_mask & FRONT) == FRONT &&
+			mix->upmix == CHANNELMIX_UPMIX_SIMPLE) {
+			spa_log_debug(mix->log, "produce RC from FC (%f)", slev);
+			_MATRIX(RC,FC) += slev;
+		} else {
+			spa_log_debug(mix->log, "won't produce RC");
+		}
+	}
 
 done:
 	for (jc = 0, ic = 0, i = 0; i < SPA_AUDIO_MAX_CHANNELS; i++) {
 		float sum = 0.0f;
+		char str[1024], str2[1024];
+		int idx = 0, idx2 = 0;
 		if ((dst_mask & (1UL << i)) == 0)
 			continue;
 		for (jc = 0, j = 0; j < SPA_AUDIO_MAX_CHANNELS; j++) {
@@ -485,9 +519,27 @@ done:
 				continue;
 			if (ic >= dst_chan || jc >= src_chan)
 				continue;
+
+			if (i == 0)
+				idx2 += snprintf(str2 + idx2, sizeof(str2) - idx2, "%-4.4s  ",
+						spa_debug_type_find_short_name(spa_type_audio_channel, j + 3));
+
 			mix->matrix_orig[ic][jc++] = matrix[i][j];
 			sum += fabs(matrix[i][j]);
+
+			if (matrix[i][j] == 0.0f)
+				idx += snprintf(str + idx, sizeof(str) - idx, "      ");
+			else
+				idx += snprintf(str + idx, sizeof(str) - idx, "%1.3f ", matrix[i][j]);
 		}
+		if (dst_mask != 0 && src_mask != 0 && sum > 0.0f) {
+			if (i == 0)
+				spa_log_info(mix->log, "     %s", str2);
+			spa_log_info(mix->log, "%-4.4s %s   %f",
+					spa_debug_type_find_short_name(spa_type_audio_channel, i + 3),
+					str, sum);
+		}
+
 		maxsum = SPA_MAX(maxsum, sum);
 		if (i == _CH(LFE) && mix->lfe_cutoff > 0.0f && filter_lfe) {
 			spa_log_info(mix->log, "channel %d is LFE cutoff:%f", ic, mix->lfe_cutoff);

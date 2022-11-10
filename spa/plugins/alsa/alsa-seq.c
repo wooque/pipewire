@@ -586,10 +586,10 @@ static int process_read(struct seq_state *state)
 			continue;
 
 		if (prepare_buffer(state, port) >= 0) {
-			port->buffer->buf->datas[0].chunk->offset = 0;
-			port->buffer->buf->datas[0].chunk->size = port->builder.state.offset,
-
 			spa_pod_builder_pop(&port->builder, &port->frame);
+
+			port->buffer->buf->datas[0].chunk->offset = 0;
+			port->buffer->buf->datas[0].chunk->size = port->builder.state.offset;
 
 			/* move buffer to ready queue */
 			spa_list_remove(&port->buffer->link);
@@ -702,6 +702,21 @@ static int process_write(struct seq_state *state)
 	return res;
 }
 
+static void update_position(struct seq_state *state)
+{
+	if (state->position) {
+		struct spa_io_clock *clock = &state->position->clock;
+		state->rate = clock->rate;
+		if (state->rate.num == 0 || state->rate.denom == 0)
+			state->rate = SPA_FRACTION(1, 48000);
+		state->duration = clock->duration;
+	} else {
+		state->rate = SPA_FRACTION(1, 48000);
+		state->duration = 1024;
+	}
+	state->threshold = state->duration;
+}
+
 static int update_time(struct seq_state *state, uint64_t nsec, bool follower)
 {
 	snd_seq_queue_status_t *status;
@@ -709,16 +724,6 @@ static int update_time(struct seq_state *state, uint64_t nsec, bool follower)
 	uint64_t queue_real;
 	double err, corr;
 	uint64_t queue_elapsed;
-
-	if (state->position) {
-		struct spa_io_clock *clock = &state->position->clock;
-		state->rate = clock->rate;
-		state->duration = clock->duration;
-	} else {
-		state->rate = SPA_FRACTION(1, 48000);
-		state->duration = 1024;
-	}
-	state->threshold = state->duration;
 
 	corr = 1.0 - (state->dll.z2 + state->dll.z3);
 
@@ -776,6 +781,8 @@ int spa_alsa_seq_process(struct seq_state *state)
 {
 	int res;
 
+	update_position(state);
+
 	res = process_recycle(state);
 
 	if (state->following && state->position) {
@@ -800,11 +807,13 @@ static void alsa_on_timeout_event(struct spa_source *source)
 
 	spa_log_trace(state->log, "timeout %"PRIu64, state->current_time);
 
+	update_position(state);
+
 	update_time(state, state->current_time, false);
 
 	res = process_read(state);
-	if (res > 0)
-		spa_node_call_ready(&state->callbacks, res);
+	if (res >= 0)
+		spa_node_call_ready(&state->callbacks, res | SPA_STATUS_NEED_DATA);
 
 	set_timeout(state, state->next_time);
 }
@@ -878,15 +887,7 @@ int spa_alsa_seq_start(struct seq_state *state)
 	while (snd_seq_drain_output(state->event.hndl) > 0)
 		sleep(1);
 
-	if (state->position) {
-		struct spa_io_clock *clock = &state->position->clock;
-		state->rate = clock->rate;
-		state->duration = clock->duration;
-	} else {
-		state->rate = SPA_FRACTION(1, 48000);
-		state->duration = 1024;
-	}
-	state->threshold = state->duration;
+	update_position(state);
 
 	state->started = true;
 
