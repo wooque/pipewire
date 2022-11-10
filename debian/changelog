@@ -8,7 +8,7 @@ pipewire (0.3.60-1) UNRELEASED; urgency=medium
   * pipewire-pulse: add pulseaudio-utils in Recommends instead
       of Suggests (LP: #1993358)
   * pipewire-alsa: install conf files in the right location
-      (Closes: #1013276, LP: #1975823)
+      (Closes: #1013276, #1023504, LP: #1975823)
 
  -- Dylan Aïssi <daissi@debian.org>  Thu, 10 Nov 2022 14:12:40 +0100
 
