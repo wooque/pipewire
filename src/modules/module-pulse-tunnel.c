@@ -183,6 +183,8 @@ struct impl {
 	pa_context *pa_context;
 	pa_stream *pa_stream;
 
+	struct ratelimit rate_limit;
+
 	uint32_t target_latency;
 	uint32_t current_latency;
 	uint32_t target_buffer;
@@ -524,9 +526,10 @@ static void stream_write_request_cb(pa_stream *s, size_t length, void *userdata)
 {
 	struct impl *impl = userdata;
 	int32_t avail;
-	uint32_t index, len, offset, l0, l1;
+	uint32_t index;
+	size_t size;
 	pa_usec_t latency;
-	int negative;
+	int negative, res;
 
 	if (impl->resync) {
 		impl->resync = false;
@@ -542,43 +545,54 @@ static void stream_write_request_cb(pa_stream *s, size_t length, void *userdata)
 	impl->current_latency += avail / impl->frame_size;
 
 	while (avail < (int32_t)length) {
+		uint32_t maxsize = SPA_ROUND_DOWN(sizeof(impl->empty), impl->frame_size);
 		/* send silence for the data we don't have */
-		len = SPA_MIN(length - avail, sizeof(impl->empty));
-		pa_stream_write(impl->pa_stream,
-				impl->empty, len,
-				NULL, 0, PA_SEEK_RELATIVE);
-		length -= len;
+		size = SPA_MIN(length - avail, maxsize);
+		if ((res = pa_stream_write(impl->pa_stream,
+				impl->empty, size,
+				NULL, 0, PA_SEEK_RELATIVE)) != 0)
+			pw_log_warn("error writing stream: %s", pa_strerror(res));
+		length -= size;
 	}
-	if (length > 0 && avail >= (int32_t)length) {
-		/* always send as much as is requested */
-		len = length;
-		offset = index & RINGBUFFER_MASK;
-		l0 = SPA_MIN(len, RINGBUFFER_SIZE - offset);
-		l1 = len - l0;
+	while (length > 0 && avail >= (int32_t)length) {
+		void *data;
 
-		pa_stream_write(impl->pa_stream,
-				SPA_PTROFF(impl->buffer, offset, void), l0,
-				NULL, 0, PA_SEEK_RELATIVE);
+		size = length;
+		pa_stream_begin_write(impl->pa_stream, &data, &size);
 
-		if (SPA_UNLIKELY(l1 > 0)) {
-			pa_stream_write(impl->pa_stream,
-					impl->buffer, l1,
-					NULL, 0, PA_SEEK_RELATIVE);
-		}
-		index += len;
+		spa_ringbuffer_read_data(&impl->ring,
+				impl->buffer, RINGBUFFER_SIZE,
+				index & RINGBUFFER_MASK,
+				data, size);
+
+		if ((res = pa_stream_write(impl->pa_stream,
+			data, size, NULL, 0, PA_SEEK_RELATIVE)) != 0)
+			pw_log_warn("error writing stream: %zd %s", size,
+					pa_strerror(res));
+
+		index += size;
+		length -= size;
+		avail -= size;
 		spa_ringbuffer_read_update(&impl->ring, index);
 	}
 }
 static void stream_underflow_cb(pa_stream *s, void *userdata)
 {
 	struct impl *impl = userdata;
-	pw_log_warn("underflow");
+	struct timespec ts;
+
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	if (ratelimit_test(&impl->rate_limit, SPA_TIMESPEC_TO_NSEC(&ts), SPA_LOG_LEVEL_WARN))
+		pw_log_warn("underflow");
 	impl->resync = true;
 }
 static void stream_overflow_cb(pa_stream *s, void *userdata)
 {
 	struct impl *impl = userdata;
-	pw_log_warn("overflow");
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	if (ratelimit_test(&impl->rate_limit, SPA_TIMESPEC_TO_NSEC(&ts), SPA_LOG_LEVEL_WARN))
+		pw_log_warn("overflow");
 	impl->resync = true;
 }
 
@@ -606,13 +620,14 @@ static pa_proplist* tunnel_new_proplist(struct impl *impl)
 static int create_pulse_stream(struct impl *impl)
 {
 	pa_sample_spec ss;
+	pa_channel_map map;
 	const char *server_address, *remote_node_target;
 	pa_proplist *props = NULL;
 	pa_mainloop_api *api;
 	char stream_name[1024];
 	pa_buffer_attr bufferattr;
 	int res = -EIO;
-	uint32_t latency_bytes;
+	uint32_t latency_bytes, i, aux = 0;
 
 	if ((impl->pa_mainloop = pa_threaded_mainloop_new()) == NULL)
 		goto error;
@@ -659,10 +674,14 @@ static int create_pulse_stream(struct impl *impl)
 	ss.channels = impl->info.channels;
 	ss.rate = impl->info.rate;
 
+	map.channels = impl->info.channels;
+	for (i = 0; i < map.channels; i++)
+		map.map[i] = (pa_channel_position_t)channel_id2pa(impl->info.position[i], &aux);
+
 	snprintf(stream_name, sizeof(stream_name), _("Tunnel for %s@%s"),
 			pw_get_user_name(), pw_get_host_name());
 
-	if (!(impl->pa_stream = pa_stream_new(impl->pa_context, stream_name, &ss, NULL))) {
+	if (!(impl->pa_stream = pa_stream_new(impl->pa_context, stream_name, &ss, &map))) {
 		res = pa_context_errno(impl->pa_context);
 		goto error_unlock;
 	}
@@ -701,6 +720,8 @@ static int create_pulse_stream(struct impl *impl)
 				PA_STREAM_AUTO_TIMING_UPDATE);
 	} else {
 		bufferattr.tlength = latency_bytes / 2;
+		bufferattr.minreq = bufferattr.tlength / 4;
+		bufferattr.prebuf = bufferattr.tlength;
 
 		res = pa_stream_connect_playback(impl->pa_stream,
 				remote_node_target, &bufferattr,
@@ -951,6 +972,8 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	spa_ringbuffer_init(&impl->ring);
 	impl->buffer = calloc(1, RINGBUFFER_SIZE);
 	spa_dll_init(&impl->dll);
+	impl->rate_limit.interval = 2 * SPA_NSEC_PER_SEC;
+	impl->rate_limit.burst = 1;
 
 	if ((str = pw_properties_get(props, "tunnel.mode")) != NULL) {
 		if (spa_streq(str, "source")) {

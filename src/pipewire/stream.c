@@ -544,15 +544,15 @@ static int enum_params(void *object, bool is_port, int seq, uint32_t id, uint32_
 	spa_list_for_each(p, &d->param_list, link) {
 		struct spa_pod *param;
 
-		result.index = result.next++;
-		if (result.index < start)
-			continue;
-
 		param = p->param;
 		if (param == NULL || p->id != id)
 			continue;
 
 		found = true;
+
+		result.index = result.next++;
+		if (result.index < start)
+			continue;
 
 		spa_pod_dynamic_builder_init(&b, buffer, sizeof(buffer), 4096);
 		if (spa_pod_filter(&b.b, &result.param, param, filter) == 0) {
@@ -2330,7 +2330,7 @@ int pw_stream_flush(struct pw_stream *stream, bool drain)
 	struct stream *impl = SPA_CONTAINER_OF(stream, struct stream, this);
 	pw_loop_invoke(impl->context->data_loop,
 			drain ? do_drain : do_flush, 1, NULL, 0, true, impl);
-	if (!drain)
+	if (!drain && impl->node != NULL)
 		spa_node_send_command(impl->node->node,
 				&SPA_NODE_COMMAND_INIT(SPA_NODE_COMMAND_Flush));
 	return 0;

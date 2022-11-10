@@ -517,6 +517,9 @@ static int do_allocation(struct pw_impl_link *this)
 		if (output->node->remote || input->node->remote)
 			alloc_flags |= PW_BUFFERS_FLAG_SHARED_MEM;
 
+		if (output->node->driver)
+			alloc_flags |= PW_BUFFERS_FLAG_IN_PRIORITY;
+
 		/* if output port can alloc buffers, alloc skeleton buffers */
 		if (SPA_FLAG_IS_SET(out_flags, SPA_PORT_FLAG_CAN_ALLOC_BUFFERS)) {
 			SPA_FLAG_SET(alloc_flags, PW_BUFFERS_FLAG_NO_MEM);
@@ -619,7 +622,8 @@ int pw_impl_link_activate(struct pw_impl_link *this)
 	pw_log_debug("%p: activate activated:%d state:%s", this, impl->activated,
 			pw_link_state_as_string(this->info.state));
 
-	if (impl->activated || !this->prepared || !impl->inode->added || !impl->onode->active)
+	if (impl->activated || !this->prepared || !impl->inode->active ||
+			!impl->inode->added || !impl->onode->active)
 		return 0;
 
 	if (!impl->io_set) {

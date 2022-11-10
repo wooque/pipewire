@@ -785,10 +785,10 @@ static struct spa_pod *get_prop_info(struct graph *graph, struct spa_pod_builder
 	spa_pod_builder_prop(b, SPA_PROP_INFO_type, 0);
 	if (p->hint & FC_HINT_BOOLEAN) {
 		if (min == max) {
-			spa_pod_builder_bool(b, def <= 0.0 ? false : true);
+			spa_pod_builder_bool(b, def <= 0.0f ? false : true);
 		} else  {
 			spa_pod_builder_push_choice(b, &f[1], SPA_CHOICE_Enum, 0);
-			spa_pod_builder_bool(b, def <= 0.0 ? false : true);
+			spa_pod_builder_bool(b, def <= 0.0f ? false : true);
 			spa_pod_builder_bool(b, false);
 			spa_pod_builder_bool(b, true);
 			spa_pod_builder_pop(b, &f[1]);
@@ -844,7 +844,7 @@ static struct spa_pod *get_props_param(struct graph *graph, struct spa_pod_build
 
 		spa_pod_builder_string(b, name);
 		if (p->hint & FC_HINT_BOOLEAN) {
-			spa_pod_builder_bool(b, port->control_data <= 0.0 ? false : true);
+			spa_pod_builder_bool(b, port->control_data <= 0.0f ? false : true);
 		} else if (p->hint & FC_HINT_INTEGER) {
 			spa_pod_builder_int(b, port->control_data);
 		} else {
@@ -1002,6 +1002,7 @@ static void param_changed(void *data, uint32_t id, const struct spa_pod *param)
 {
 	struct impl *impl = data;
 	struct graph *graph = &impl->graph;
+	int res;
 
 	switch (id) {
 	case SPA_PARAM_Format:
@@ -1010,9 +1011,15 @@ static void param_changed(void *data, uint32_t id, const struct spa_pod *param)
 		} else {
 			struct spa_audio_info_raw info;
 			spa_zero(info);
-			spa_format_audio_raw_parse(param, &info);
+			if ((res = spa_format_audio_raw_parse(param, &info)) < 0)
+				goto error;
+			if (info.rate == 0) {
+				res = -EINVAL;
+				goto error;
+			}
 			impl->rate = info.rate;
-			graph_instantiate(graph);
+			if ((res = graph_instantiate(graph)) < 0)
+				goto error;
 		}
 		break;
 	case SPA_PARAM_Props:
@@ -1023,6 +1030,11 @@ static void param_changed(void *data, uint32_t id, const struct spa_pod *param)
 		param_latency_changed(impl, param);
 		break;
 	}
+	return;
+
+error:
+	pw_stream_set_error(impl->capture, res, "can't start graph: %s",
+			spa_strerror(res));
 }
 
 static const struct pw_stream_events in_stream_events = {
@@ -1172,16 +1184,19 @@ static struct plugin *plugin_load(struct impl *impl, const char *type, const cha
 	else if (spa_streq(type, "ladspa")) {
 		pl = load_ladspa_plugin(support, n_support, path, NULL);
 	}
-#ifdef HAVE_LILV
 	else if (spa_streq(type, "lv2")) {
+#ifdef HAVE_LILV
 		pl = load_lv2_plugin(support, n_support, path, NULL);
-	}
+#else
+		pw_log_error("filter-chain is compiled without lv2 support");
+		pl = NULL;
+		errno = ENOTSUP;
 #endif
-	else {
+	} else {
+		pw_log_error("invalid plugin type '%s'", type);
 		pl = NULL;
 		errno = EINVAL;
 	}
-
 	if (pl == NULL)
 		goto exit;
 
@@ -1501,7 +1516,6 @@ static int load_node(struct graph *graph, struct spa_json *json)
 	bool have_config = false;
 	uint32_t i;
 	int res;
-	float *data;
 
 	while (spa_json_get_string(json, key, sizeof(key)) > 0) {
 		if (spa_streq("type", key)) {
@@ -1539,10 +1553,8 @@ static int load_node(struct graph *graph, struct spa_json *json)
 			break;
 	}
 
-	if (spa_streq(type, "builtin")) {
+	if (spa_streq(type, "builtin"))
 		snprintf(plugin, sizeof(plugin), "%s", "builtin");
-	} else if (!spa_streq(type, "ladspa") && !spa_streq(type, "lv2"))
-		return -ENOTSUP;
 
 	pw_log_info("loading type:%s plugin:%s label:%s", type, plugin, label);
 
@@ -1562,6 +1574,10 @@ static int load_node(struct graph *graph, struct spa_json *json)
 	node->control_port = calloc(desc->n_control, sizeof(struct port));
 	node->notify_port = calloc(desc->n_notify, sizeof(struct port));
 
+	pw_log_info("loaded n_input:%d n_output:%d n_control:%d n_notify:%d",
+			desc->n_input, desc->n_output,
+			desc->n_control, desc->n_notify);
+
 	for (i = 0; i < desc->n_input; i++) {
 		struct port *port = &node->input_port[i];
 		port->node = node;
@@ -1576,14 +1592,6 @@ static int load_node(struct graph *graph, struct spa_json *json)
 		port->idx = i;
 		port->external = SPA_ID_INVALID;
 		port->p = desc->output[i];
-		if ((data = port->audio_data[i]) == NULL) {
-			data = calloc(1, MAX_SAMPLES * sizeof(float));
-			if (data == NULL) {
-				pw_log_error("cannot create port data: %m");
-				return -errno;
-			}
-		}
-		port->audio_data[i] = data;
 		spa_list_init(&port->link_list);
 	}
 	for (i = 0; i < desc->n_control; i++) {
@@ -1629,6 +1637,26 @@ static void node_cleanup(struct node *node)
 	}
 }
 
+static int port_ensure_data(struct port *port, uint32_t i)
+{
+	float *data;
+	if ((data = port->audio_data[i]) == NULL) {
+		data = calloc(1, MAX_SAMPLES * sizeof(float));
+		if (data == NULL) {
+			pw_log_error("cannot create port data: %m");
+			return -errno;
+		}
+	}
+	port->audio_data[i] = data;
+	return 0;
+}
+
+static void port_free_data(struct port *port, uint32_t i)
+{
+	free(port->audio_data[i]);
+	port->audio_data[i] = NULL;
+}
+
 static void node_free(struct node *node)
 {
 	uint32_t i, j;
@@ -1636,7 +1664,7 @@ static void node_free(struct node *node)
 	spa_list_remove(&node->link);
 	for (i = 0; i < node->n_hndl; i++) {
 		for (j = 0; j < node->desc->n_output; j++)
-			free(node->output_port[j].audio_data[i]);
+			port_free_data(&node->output_port[j], i);
 	}
 	node_cleanup(node);
 	descriptor_unref(node->desc);
@@ -1688,6 +1716,8 @@ static int graph_instantiate(struct graph *graph)
 
 				spa_list_for_each(link, &port->link_list, input_link) {
 					struct port *peer = link->output;
+					if ((res = port_ensure_data(peer, i)) < 0)
+						goto error;
 					pw_log_info("connect input port %s[%d]:%s %p",
 							node->name, i, d->ports[port->p].name,
 							peer->audio_data[i]);
@@ -1696,6 +1726,8 @@ static int graph_instantiate(struct graph *graph)
 			}
 			for (j = 0; j < desc->n_output; j++) {
 				port = &node->output_port[j];
+				if ((res = port_ensure_data(port, i)) < 0)
+					goto error;
 				pw_log_info("connect output port %s[%d]:%s %p",
 						node->name, i, d->ports[port->p].name,
 						port->audio_data[i]);
@@ -1938,6 +1970,8 @@ static int setup_graph(struct graph *graph, struct spa_json *inputs, struct spa_
 			gh->hndl = &node->hndl[i];
 			gh->desc = d;
 
+		}
+		for (i = 0; i < desc->n_output; i++) {
 			spa_list_for_each(link, &node->output_port[i].link_list, output_link)
 				link->input->node->n_deps--;
 		}

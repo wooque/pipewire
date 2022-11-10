@@ -220,6 +220,7 @@ struct impl {
 	unsigned int resample_peaks:1;
 	unsigned int is_passthrough:1;
 	unsigned int drained:1;
+	unsigned int rate_adjust:1;
 
 	uint32_t empty_size;
 	float *empty;
@@ -241,16 +242,15 @@ static void set_volume(struct impl *this);
 static void emit_node_info(struct impl *this, bool full)
 {
 	uint64_t old = full ? this->info.change_mask : 0;
-	uint32_t i;
 
 	if (full)
 		this->info.change_mask = this->info_all;
 	if (this->info.change_mask) {
 		if (this->info.change_mask & SPA_NODE_CHANGE_MASK_PARAMS) {
-			for (i = 0; i < SPA_N_ELEMENTS(this->params); i++) {
-				if (this->params[i].user > 0) {
-					this->params[i].flags ^= SPA_PARAM_INFO_SERIAL;
-					this->params[i].user = 0;
+			SPA_FOR_EACH_ELEMENT_VAR(this->params, p) {
+				if (p->user > 0) {
+					p->flags ^= SPA_PARAM_INFO_SERIAL;
+					p->user = 0;
 				}
 			}
 		}
@@ -262,7 +262,6 @@ static void emit_node_info(struct impl *this, bool full)
 static void emit_port_info(struct impl *this, struct port *port, bool full)
 {
 	uint64_t old = full ? port->info.change_mask : 0;
-	uint32_t i;
 
 	if (full)
 		port->info.change_mask = port->info_all;
@@ -282,10 +281,10 @@ static void emit_port_info(struct impl *this, struct port *port, bool full)
 		port->info.props = &SPA_DICT_INIT(items, n_items);
 
 		if (port->info.change_mask & SPA_PORT_CHANGE_MASK_PARAMS) {
-			for (i = 0; i < SPA_N_ELEMENTS(port->params); i++) {
-				if (port->params[i].user > 0) {
-					port->params[i].flags ^= SPA_PARAM_INFO_SERIAL;
-					port->params[i].user = 0;
+			SPA_FOR_EACH_ELEMENT_VAR(port->params, p) {
+				if (p->user > 0) {
+					p->flags ^= SPA_PARAM_INFO_SERIAL;
+					p->user = 0;
 				}
 			}
 		}
@@ -432,7 +431,6 @@ static int impl_node_enum_params(void *object, int seq,
 	{
 		struct props *p = &this->props;
 		struct spa_pod_frame f[2];
-		uint32_t i;
 
 		switch (result.index) {
 		case 0:
@@ -596,9 +594,9 @@ static int impl_node_enum_params(void *object, int seq,
 
 			spa_pod_builder_prop(&b, SPA_PROP_INFO_labels, 0);
 			spa_pod_builder_push_struct(&b, &f[1]);
-			for (i = 0; i < SPA_N_ELEMENTS(channelmix_upmix_info); i++) {
-				spa_pod_builder_string(&b, channelmix_upmix_info[i].label);
-				spa_pod_builder_string(&b, channelmix_upmix_info[i].description);
+			SPA_FOR_EACH_ELEMENT_VAR(channelmix_upmix_info, i) {
+				spa_pod_builder_string(&b, i->label);
+				spa_pod_builder_string(&b, i->description);
 			}
 			spa_pod_builder_pop(&b, &f[1]);
 			param = spa_pod_builder_pop(&b, &f[0]);
@@ -646,9 +644,9 @@ static int impl_node_enum_params(void *object, int seq,
 				0);
 			spa_pod_builder_prop(&b, SPA_PROP_INFO_labels, 0);
 			spa_pod_builder_push_struct(&b, &f[1]);
-			for (i = 0; i < SPA_N_ELEMENTS(dither_method_info); i++) {
-				spa_pod_builder_string(&b, dither_method_info[i].label);
-				spa_pod_builder_string(&b, dither_method_info[i].description);
+			SPA_FOR_EACH_ELEMENT_VAR(dither_method_info, i) {
+				spa_pod_builder_string(&b, i->label);
+				spa_pod_builder_string(&b, i->description);
 			}
 			spa_pod_builder_pop(&b, &f[1]);
 			param = spa_pod_builder_pop(&b, &f[0]);
@@ -827,8 +825,11 @@ static int parse_prop_params(struct impl *this, struct spa_pod *params)
 		if (spa_pod_is_string(pod)) {
 			spa_pod_copy_string(pod, sizeof(value), value);
 		} else if (spa_pod_is_float(pod)) {
-			snprintf(value, sizeof(value), "%f",
+			spa_dtoa(value, sizeof(value),
 					SPA_POD_VALUE(struct spa_pod_float, pod));
+		} else if (spa_pod_is_double(pod)) {
+			spa_dtoa(value, sizeof(value),
+					SPA_POD_VALUE(struct spa_pod_double, pod));
 		} else if (spa_pod_is_int(pod)) {
 			snprintf(value, sizeof(value), "%d",
 					SPA_POD_VALUE(struct spa_pod_int, pod));
@@ -843,6 +844,9 @@ static int parse_prop_params(struct impl *this, struct spa_pod *params)
 
 		spa_log_info(this->log, "key:'%s' val:'%s'", name, value);
 		changed += audioconvert_set_param(this, name, value);
+	}
+	if (changed) {
+		channelmix_init(&this->mix);
 	}
 	return changed;
 }
@@ -911,6 +915,11 @@ static int apply_props(struct impl *this, const struct spa_pod *param)
 			break;
 		case SPA_PROP_rate:
 			spa_pod_get_double(&prop->value, &p->rate);
+			if (!this->rate_adjust && p->rate != 1.0) {
+				this->rate_adjust = true;
+				spa_log_info(this->log, "%p: activating adaptive resampler",
+						this);
+			}
 			break;
 		case SPA_PROP_params:
 			changed += parse_prop_params(this, &prop->value);
@@ -925,7 +934,6 @@ static int apply_props(struct impl *this, const struct spa_pod *param)
 		else if (have_channel_volume)
 			p->have_soft_volume = false;
 
-		channelmix_init(&this->mix);
 		set_volume(this);
 	}
 	return changed;
@@ -1064,7 +1072,10 @@ static int impl_node_set_param(void *object, uint32_t id, uint32_t flags,
 			if (spa_format_audio_raw_parse(format, &info.info.raw) < 0)
 				return -EINVAL;
 
-			if (info.info.raw.channels > SPA_AUDIO_MAX_CHANNELS)
+			if (info.info.raw.format == 0 ||
+			    info.info.raw.rate == 0 ||
+			    info.info.raw.channels == 0 ||
+			    info.info.raw.channels > SPA_AUDIO_MAX_CHANNELS)
 				return -EINVAL;
 
 			infop = &info;
@@ -1280,12 +1291,23 @@ static void set_volume(struct impl *this)
 	this->params[IDX_Props].user++;
 }
 
+static char *format_position(char *str, size_t len, uint32_t channels, uint32_t *position)
+{
+	uint32_t i, idx = 0;
+	for (i = 0; i < channels; i++)
+		idx += snprintf(str + idx, len - idx, "%s%s", i == 0 ? "" : " ",
+				spa_debug_type_find_short_name(spa_type_audio_channel,
+					position[i]));
+	return str;
+}
+
 static int setup_channelmix(struct impl *this)
 {
 	struct dir *in = &this->dir[SPA_DIRECTION_INPUT];
 	struct dir *out = &this->dir[SPA_DIRECTION_OUTPUT];
 	uint32_t i, src_chan, dst_chan, p;
 	uint64_t src_mask, dst_mask;
+	char str[1024];
 	int res;
 
 	src_chan = in->format.info.raw.channels;
@@ -1299,6 +1321,11 @@ static int setup_channelmix(struct impl *this)
 		p = out->format.info.raw.position[i];
 		dst_mask |= 1ULL << (p < 64 ? p : 0);
 	}
+
+	spa_log_info(this->log, "in  %s (%016"PRIx64")", format_position(str, sizeof(str),
+				src_chan, in->format.info.raw.position), src_mask);
+	spa_log_info(this->log, "out %s (%016"PRIx64")", format_position(str, sizeof(str),
+				dst_chan, out->format.info.raw.position), dst_mask);
 
 	if (src_mask & 1)
 		src_mask = default_mask(src_chan);
@@ -1356,6 +1383,8 @@ static int setup_resample(struct impl *this)
 	this->resample.log = this->log;
 	this->resample.quality = this->props.resample_quality;
 	this->resample.cpu_flags = this->cpu_flags;
+
+	this->rate_adjust = this->props.rate != 1.0;
 
 	if (this->resample_peaks)
 		res = resample_peaks_init(&this->resample);
@@ -1941,9 +1970,13 @@ static int port_set_format(void *object,
 				spa_log_error(this->log, "can't parse format %s", spa_strerror(res));
 				return res;
 			}
-			if (info.info.raw.channels > SPA_AUDIO_MAX_CHANNELS) {
-				spa_log_error(this->log, "too many channels %d > %d",
-						info.info.raw.channels, SPA_AUDIO_MAX_CHANNELS);
+			if (info.info.raw.format == 0 ||
+			    info.info.raw.rate == 0 ||
+			    info.info.raw.channels == 0 ||
+			    info.info.raw.channels > SPA_AUDIO_MAX_CHANNELS) {
+				spa_log_error(this->log, "invalid format:%d rate:%d channels:%d",
+						info.info.raw.format, info.info.raw.rate,
+						info.info.raw.channels);
 				return -EINVAL;
 			}
 			port->stride = calc_width(&info);
@@ -2272,8 +2305,7 @@ static uint32_t resample_update_rate_match(struct impl *this, bool passthrough, 
 static inline bool resample_is_passthrough(struct impl *this)
 {
 	return this->resample.i_rate == this->resample.o_rate && this->rate_scale == 1.0 &&
-		this->props.rate == 1.0 &&
-		(this->io_rate_match == NULL ||
+		!this->rate_adjust && (this->io_rate_match == NULL ||
 		 !SPA_FLAG_IS_SET(this->io_rate_match->flags, SPA_IO_RATE_MATCH_FLAG_ACTIVE));
 }
 

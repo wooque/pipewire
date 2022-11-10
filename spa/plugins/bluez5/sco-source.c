@@ -248,6 +248,7 @@ static int do_reassign_follower(struct spa_loop *loop,
 	struct impl *this = user_data;
 	struct port *port = &this->port;
 
+	set_timers(this);
 	spa_bt_decode_buffer_recover(&port->buffer);
 	return 0;
 }
@@ -590,13 +591,14 @@ static int setup_matching(struct impl *this)
 	return 0;
 }
 
+static int produce_buffer(struct impl *this);
+
 static void sco_on_timeout(struct spa_source *source)
 {
 	struct impl *this = source->data;
 	struct port *port = &this->port;
 	uint64_t exp, duration;
 	uint32_t rate;
-	struct spa_io_buffers *io = port->io;
 	uint64_t prev_time, now_time;
 
 	if (this->transport == NULL)
@@ -631,8 +633,11 @@ static void sco_on_timeout(struct spa_source *source)
 		this->clock->next_nsec = this->next_time;
 	}
 
-	spa_log_trace(this->log, "%p: %d", this, io->status);
-	io->status = SPA_STATUS_HAVE_DATA;
+	if (port->io) {
+		int status = produce_buffer(this);
+		spa_log_trace(this->log, "%p: io:%d status:%d", this, port->io->status, status);
+	}
+
 	spa_node_call_ready(&this->callbacks, SPA_STATUS_HAVE_DATA);
 
 	set_timeout(this, this->next_time);
@@ -1068,6 +1073,11 @@ static int port_set_format(struct impl *this, struct port *port,
 		if (spa_format_audio_raw_parse(format, &info.info.raw) < 0)
 			return -EINVAL;
 
+		if (info.info.raw.format != SPA_AUDIO_FORMAT_S16_LE ||
+		    info.info.raw.rate == 0 ||
+		    info.info.raw.channels != 1)
+			return -EINVAL;
+
 		port->frame_size = info.info.raw.channels * 2;
 		port->current_format = info;
 		port->have_format = true;
@@ -1285,17 +1295,13 @@ static void process_buffering(struct impl *this)
 	}
 }
 
-static int impl_node_process(void *object)
+static int produce_buffer(struct impl *this)
 {
-	struct impl *this = object;
-	struct port *port;
-	struct spa_io_buffers *io;
 	struct buffer *buffer;
+	struct port *port = &this->port;
+	struct spa_io_buffers *io = port->io;
 
-	spa_return_val_if_fail(this != NULL, -EINVAL);
-
-	port = &this->port;
-	if ((io = port->io) == NULL)
+	if (io == NULL)
 		return -EIO;
 
 	/* Return if we already have a buffer */
@@ -1308,7 +1314,7 @@ static int impl_node_process(void *object)
 		io->buffer_id = SPA_ID_INVALID;
 	}
 
-	/* Produce data */
+	/* Handle buffering */
 	process_buffering(this);
 
 	/* Return if there are no buffers ready to be processed */
@@ -1326,6 +1332,35 @@ static int impl_node_process(void *object)
 
 	/* Notify we have a buffer ready to be processed */
 	return SPA_STATUS_HAVE_DATA;
+}
+
+static int impl_node_process(void *object)
+{
+	struct impl *this = object;
+	struct port *port;
+	struct spa_io_buffers *io;
+
+	spa_return_val_if_fail(this != NULL, -EINVAL);
+
+	port = &this->port;
+	if ((io = port->io) == NULL)
+		return -EIO;
+
+	/* Return if we already have a buffer */
+	if (io->status == SPA_STATUS_HAVE_DATA)
+		return SPA_STATUS_HAVE_DATA;
+
+	/* Recycle */
+	if (io->buffer_id < port->n_buffers) {
+		recycle_buffer(this, port, io->buffer_id);
+		io->buffer_id = SPA_ID_INVALID;
+	}
+
+	/* Follower produces buffers here, driver in timeout */
+	if (this->following)
+		return produce_buffer(this);
+	else
+		return SPA_STATUS_OK;
 }
 
 static const struct spa_node_methods impl_node = {
@@ -1391,6 +1426,8 @@ static int impl_get_interface(struct spa_handle *handle, const char *type, void 
 static int impl_clear(struct spa_handle *handle)
 {
 	struct impl *this = (struct impl *) handle;
+
+	do_stop(this);
 	if (this->transport)
 		spa_hook_remove(&this->transport_listener);
 	spa_system_close(this->data_system, this->timerfd);

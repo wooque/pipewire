@@ -556,30 +556,6 @@ static int reconfigure_mode(struct impl *this, bool passthrough,
 	return 0;
 }
 
-static int format_audio_raw_parse_opt(const struct spa_pod *format, struct spa_audio_info_raw *info)
-{
-	struct spa_pod *position = NULL;
-	uint32_t media_type, media_subtype;
-	int res;
-	if ((res = spa_format_parse(format, &media_type, &media_subtype)) < 0)
-		return res;
-	if (media_type != SPA_MEDIA_TYPE_audio ||
-	    media_subtype != SPA_MEDIA_SUBTYPE_raw)
-		return -ENOTSUP;
-
-	spa_zero(*info);
-	res = spa_pod_parse_object(format,
-			SPA_TYPE_OBJECT_Format, NULL,
-			SPA_FORMAT_AUDIO_format, SPA_POD_OPT_Id(&info->format),
-			SPA_FORMAT_AUDIO_channels, SPA_POD_OPT_Int(&info->channels),
-			SPA_FORMAT_AUDIO_position, SPA_POD_OPT_Pod(&position));
-	if (position == NULL ||
-	    !spa_pod_copy_array(position, SPA_TYPE_Id, info->position, SPA_AUDIO_MAX_CHANNELS))
-		SPA_FLAG_SET(info->flags, SPA_AUDIO_FLAG_UNPOSITIONED);
-
-	return res;
-}
-
 static int impl_node_set_param(void *object, uint32_t id, uint32_t flags,
 			       const struct spa_pod *param)
 {
@@ -627,8 +603,18 @@ static int impl_node_set_param(void *object, uint32_t id, uint32_t flags,
 
 		if (format) {
 			struct spa_audio_info info;
-			if (format_audio_raw_parse_opt(format, &info.info.raw) >= 0)
+
+			spa_zero(info);
+			if ((res = spa_format_parse(format, &info.media_type, &info.media_subtype)) < 0)
+				return res;
+			if (info.media_type != SPA_MEDIA_TYPE_audio ||
+			    info.media_subtype != SPA_MEDIA_SUBTYPE_raw)
+				return -ENOTSUP;
+
+			if (spa_format_audio_raw_parse(format, &info.info.raw) >= 0) {
+				info.info.raw.rate = 0;
 				this->default_format = info;
+			}
 		}
 
 		switch (mode) {
@@ -814,21 +800,23 @@ static int impl_node_send_command(void *object, const struct spa_command *comman
 
 	switch (SPA_NODE_COMMAND_ID(command)) {
 	case SPA_NODE_COMMAND_Start:
+		spa_log_debug(this->log, "%p: starting %d", this, this->started);
 		if (this->started)
 			return 0;
 		if ((res = negotiate_format(this)) < 0)
 			return res;
 		if ((res = negotiate_buffers(this)) < 0)
 			return res;
+		this->started = true;
 		break;
 	case SPA_NODE_COMMAND_Suspend:
-		configure_format(this, 0, NULL);
-		SPA_FALLTHROUGH
+		spa_log_debug(this->log, "%p: suspending", this);
+		break;
 	case SPA_NODE_COMMAND_Pause:
-		this->started = false;
-		spa_log_debug(this->log, "%p: stopped", this);
+		spa_log_debug(this->log, "%p: pausing", this);
 		break;
 	case SPA_NODE_COMMAND_Flush:
+		spa_log_debug(this->log, "%p: flushing", this);
 		this->io_buffers.status = SPA_STATUS_OK;
 		break;
 	default:
@@ -852,8 +840,17 @@ static int impl_node_send_command(void *object, const struct spa_command *comman
 	}
 	switch (SPA_NODE_COMMAND_ID(command)) {
 	case SPA_NODE_COMMAND_Start:
-		this->started = true;
 		spa_log_debug(this->log, "%p: started", this);
+		break;
+	case SPA_NODE_COMMAND_Suspend:
+		configure_format(this, 0, NULL);
+		SPA_FALLTHROUGH
+	case SPA_NODE_COMMAND_Pause:
+		this->started = false;
+		spa_log_debug(this->log, "%p: stopped", this);
+		break;
+	case SPA_NODE_COMMAND_Flush:
+		spa_log_debug(this->log, "%p: flushed", this);
 		break;
 	}
 	return res;
@@ -1154,6 +1151,11 @@ static int follower_ready(void *data, int status)
 	struct impl *this = data;
 
 	spa_log_trace_fp(this->log, "%p: ready %d", this, status);
+
+	if (!this->started) {
+		spa_log_warn(this->log, "%p: ready stopped node", this);
+		return -EIO;
+	}
 
 	if (this->target != this->follower) {
 		this->driver = true;
