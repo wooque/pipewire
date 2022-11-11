@@ -248,6 +248,7 @@ Architecture: linux-any
 Multi-Arch: same
 Replaces: pipewire-audio-client-libraries (<< 0.3.54-1~)
 Breaks: pipewire-audio-client-libraries (<< 0.3.54-1~)
+Conflicts: pulseaudio
 Depends: pipewire (= ${binary:Version}),
          ${misc:Depends},
          ${shlibs:Depends}

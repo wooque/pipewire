@@ -10,7 +10,11 @@ pipewire (0.3.60-1) UNRELEASED; urgency=medium
   * pipewire-pulse: add pulseaudio-utils in Recommends instead
       of Suggests (LP: #1993358)
   * pipewire-alsa: install conf files in the right location
-      (Closes: #1013276, #1023504, LP: #1975823)
+      (Closes: #1023504, LP: #1975823)
+  * pipewire-alsa: conflict with pulseaudio. (Closes: #1013276)
+      As long as the pulseaudio package is installed, ALSA clients will output
+      via PulseAudio instead of PipeWire. This is due to the order of their
+      respective configs files in /etc/alsa/conf.d/.
   * pipewire: depend on adduser (Closes: #1023758)
 
  -- Dylan Aïssi <daissi@debian.org>  Thu, 10 Nov 2022 14:12:40 +0100

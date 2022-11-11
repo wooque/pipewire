@@ -46,15 +46,21 @@ Using pipewire as the default ALSA output device
 
 Install the pipewire-alsa package.
 
-ALSA clients can be configured to output via pipewire instead of
-PulseAudio or directly to ALSA.
+ALSA clients will output via pipewire instead of PulseAudio or directly to
+ALSA.
 
-To enable this:
+pipewire-alsa conflicts with pulseaudio because both try to take control of
+all ALSA devices and redirect all audio streams to them. But, because of their
+respective configs files name:
+- PipeWire:	/etc/alsa/conf.d/99-pipewire-default.conf
+- PulseAudio:	/etc/alsa/conf.d/99-pulse.conf
+which make PulseAudio ordered after PipeWire. PulseAudio will take the
+final control of ALSA clients even when pipewire-alsa is installed. Thus,
+to allow ALSA clients redirecting output to pipewire, pulseaudio package
+needs to be removed.
 
-* create an empty file /etc/pipewire/media-session.d/with-alsa
-
-* copy /usr/share/doc/pipewire/examples/alsa.conf.d/99-pipewire-default.conf
-  into /etc/alsa/conf.d/
+To check where streams are redirected, run the following command:
+$ aplay -L | grep -A 1 default
 
 
 Using pipewire as a substitute for JACK
