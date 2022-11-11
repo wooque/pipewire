@@ -1,4 +1,4 @@
-pipewire (0.3.60-1) UNRELEASED; urgency=medium
+pipewire (0.3.60-1) unstable; urgency=medium
 
   * New upstream release
       - Improve support of RealTek ALC4080 (Closes: #1021179)
@@ -17,7 +17,7 @@ pipewire (0.3.60-1) UNRELEASED; urgency=medium
       respective configs files in /etc/alsa/conf.d/.
   * pipewire: depend on adduser (Closes: #1023758)
 
- -- Dylan Aïssi <daissi@debian.org>  Thu, 10 Nov 2022 14:12:40 +0100
+ -- Dylan Aïssi <daissi@debian.org>  Fri, 11 Nov 2022 14:55:34 +0100
 
 pipewire (0.3.59-1) unstable; urgency=medium
 
