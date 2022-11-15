@@ -28,6 +28,9 @@ Using pipewire with Bluetooth
 
 Install the libspa-0.2-bluetooth package to add Bluetooth support to pipewire.
 
+Please note that AAC codec support is currently disabled due to license issue.
+See https://bugs.debian.org/981285
+
 Pipewire (nor any other package) does not depend or recommend libspa-0.2-bluetooth
 as not all users are interested in Bluetooth support.
 The same apply to pulseaudio and pulseaudio-module-bluetooth:
