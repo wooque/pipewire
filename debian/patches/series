@@ -3,3 +3,5 @@ Don-t-build_same_binary_twice.patch
 Fix_services.patch
 # Recommended patch for 0.3.60
 b720da771efa950cf380101bed42d5d5ee177908.patch
+bf3516ba0496b644b3944b114253f23964178897.patch
+b46d8a8c921a8da6883610ad4b68da95bf59b59e.patch
