@@ -10,6 +10,7 @@ Build-Depends: debhelper-compat (= 13),
                libasound2-dev,
                libavahi-client-dev,
                libbluetooth-dev,
+               libcamera-dev,
                libdbus-1-dev,
                libfreeaptx-dev,
                libglib2.0-dev,
@@ -304,6 +305,24 @@ Description: PipeWire V4L2 plugin
   - Generating graphs for audio and video processing.
  .
  This package contains the V4L2 plugin.
+
+Package: pipewire-libcamera
+Section: video
+Architecture: linux-any
+Multi-Arch: same
+Depends: pipewire (= ${binary:Version}),
+         ${misc:Depends},
+         ${shlibs:Depends}
+Description: PipeWire libcamera plugin
+ PipeWire is a server and user space API to deal with multimedia
+ pipelines. This includes:
+ .
+  - Making available sources of video (such as from a capture devices or
+    application provided streams) and multiplexing this with clients.
+  - Accessing sources of video for consumption.
+  - Generating graphs for audio and video processing.
+ .
+ This package contains the libcamera plugin.
 
 Package: pipewire-tests
 Architecture: linux-any

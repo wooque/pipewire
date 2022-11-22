@@ -1,3 +1,9 @@
+pipewire (0.3.60-3) UNRELEASED; urgency=medium
+
+  * pipewire-libcamera: New package for libcamera plugin (Closes: #1024591)
+
+ -- Dylan Aïssi <daissi@debian.org>  Tue, 22 Nov 2022 10:16:47 +0100
+
 pipewire (0.3.60-2) unstable; urgency=medium
 
   * Cherry-pick upstream recommended patches:
