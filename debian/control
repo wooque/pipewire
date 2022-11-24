@@ -395,7 +395,8 @@ Package: pipewire-audio-client-libraries
 Section: oldlibs
 Architecture: all
 Depends: pipewire-alsa,
-         pipewire-jack
+         pipewire-jack,
+         ${misc:Depends}
 Description: transitional package for pipewire-alsa and pipewire-jack
  PipeWire is a server and user space API to deal with multimedia
  pipelines.
