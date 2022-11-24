@@ -1,4 +1,4 @@
-pipewire (0.3.61-1) UNRELEASED; urgency=medium
+pipewire (0.3.61-1) unstable; urgency=medium
 
   * New upstream release
       - pulse-server: add a pulse.idle.timeout option. Clients that are
@@ -13,7 +13,7 @@ pipewire (0.3.61-1) UNRELEASED; urgency=medium
   * pipewire-libcamera: set minimum libcamera to 0.0.1
   * Drop debian/libspa-0.2-vulkan.install, not used
 
- -- Dylan Aïssi <daissi@debian.org>  Thu, 24 Nov 2022 11:45:36 +0100
+ -- Dylan Aïssi <daissi@debian.org>  Thu, 24 Nov 2022 14:30:51 +0100
 
 pipewire (0.3.60-3) unstable; urgency=medium
 
