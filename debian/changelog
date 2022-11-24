@@ -1,6 +1,9 @@
 pipewire (0.3.61-1) UNRELEASED; urgency=medium
 
   * New upstream release
+      - pulse-server: add a pulse.idle.timeout option. Clients that are
+        not sending any data will be paused so that the sinks can suspend
+        to save battery power (Closes: #1021483, #1022120)
   * Drop patches included in upstream release:
       - b720da77: pulse-server: also advance read pointer in underrun
       - bf3516ba: To avoid crashes when switching profiles
