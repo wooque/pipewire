@@ -24,6 +24,7 @@
  */
 
 #include <sys/utsname.h>
+#include <arpa/inet.h>
 
 #include <pipewire/pipewire.h>
 
@@ -32,6 +33,7 @@
 #include "../manager.h"
 #include "../module.h"
 #include "../pulse-server.h"
+#include "../server.h"
 #include "../../module-zeroconf-discover/avahi-poll.h"
 
 #include <avahi-client/client.h>
@@ -83,6 +85,7 @@ struct service {
 	struct pw_properties *props;
 
 	char service_name[AVAHI_LABEL_MAX];
+	unsigned published:1;
 };
 
 struct module_zeroconf_publish_data {
@@ -93,8 +96,7 @@ struct module_zeroconf_publish_data {
 
 	struct spa_hook core_listener;
 	struct spa_hook manager_listener;
-
-	unsigned int port;
+	struct spa_hook impl_listener;
 
 	AvahiPoll *avahi_poll;
 	AvahiClient *client;
@@ -151,6 +153,7 @@ static void unpublish_service(struct service *s)
 {
 	spa_list_remove(&s->link);
 	spa_list_append(&s->userdata->pending, &s->link);
+	s->published = false;
 }
 
 static void unpublish_all_services(struct module_zeroconf_publish_data *d)
@@ -315,6 +318,11 @@ static void service_entry_group_callback(AvahiEntryGroup *g, AvahiEntryGroupStat
 	struct service *s = userdata;
 
 	spa_assert(s);
+	if (!s->published) {
+		pw_log_info("cancel unpublished service: %s", s->service_name);
+		clear_entry_group(s);
+		return;
+	}
 
 	switch (state) {
 	case AVAHI_ENTRY_GROUP_ESTABLISHED:
@@ -389,17 +397,47 @@ static AvahiStringList *get_service_txt(const struct service *s)
 	return txt;
 }
 
+static int find_port(struct service *s, int *proto, uint16_t *port)
+{
+	struct module_zeroconf_publish_data *d = s->userdata;
+	struct impl *impl = d->module->impl;
+	struct server *server;
+
+	spa_list_for_each(server, &impl->servers, link) {
+		if (server->addr.ss_family == AF_INET) {
+			*proto = AVAHI_PROTO_INET;
+			*port = ntohs(((struct sockaddr_in*) &server->addr)->sin_port);
+			return 0;
+		} else if (server->addr.ss_family == AF_INET6) {
+			*proto = AVAHI_PROTO_INET6;
+			*port = ntohs(((struct sockaddr_in6*) &server->addr)->sin6_port);
+			return 0;
+		}
+	}
+	return -ENODEV;
+}
+
 static void publish_service(struct service *s)
 {
-	if (!s->userdata->client || avahi_client_get_state(s->userdata->client) != AVAHI_CLIENT_S_RUNNING)
+	struct module_zeroconf_publish_data *d = s->userdata;
+	int proto;
+	uint16_t port;
+
+	if (find_port(s, &proto, &port) < 0)
 		return;
 
+	pw_log_debug("found proto:%d port:%d", proto, port);
+
+	if (!d->client || avahi_client_get_state(d->client) != AVAHI_CLIENT_S_RUNNING)
+		return;
+
+	s->published = true;
 	if (!s->entry_group) {
-		s->entry_group = avahi_entry_group_new(s->userdata->client, service_entry_group_callback, s);
+		s->entry_group = avahi_entry_group_new(d->client, service_entry_group_callback, s);
 		if (s->entry_group == NULL) {
 			pw_log_error("avahi_entry_group_new(): %s",
-					avahi_strerror(avahi_client_errno(s->userdata->client)));
-			return;
+					avahi_strerror(avahi_client_errno(d->client)));
+			goto error;
 		}
 	} else {
 		avahi_entry_group_reset(s->entry_group);
@@ -410,22 +448,22 @@ static void publish_service(struct service *s)
 
 	if (avahi_entry_group_add_service_strlst(
 				s->entry_group,
-				AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC,
+				AVAHI_IF_UNSPEC, proto,
 				0,
 				s->service_name,
 				s->service_type,
 				NULL,
 				NULL,
-				s->userdata->port,
+				port,
 				s->txt) < 0) {
 		pw_log_error("avahi_entry_group_add_service_strlst(): %s",
-			avahi_strerror(avahi_client_errno(s->userdata->client)));
-		return;
+			avahi_strerror(avahi_client_errno(d->client)));
+		goto error;
 	}
 
 	if (avahi_entry_group_add_service_subtype(
 				s->entry_group,
-				AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC,
+				AVAHI_IF_UNSPEC, proto,
 				0,
 				s->service_name,
 				s->service_type,
@@ -434,35 +472,40 @@ static void publish_service(struct service *s)
 				(s->subtype == SUBTYPE_HARDWARE ? SERVICE_SUBTYPE_SOURCE_HARDWARE : (s->subtype == SUBTYPE_VIRTUAL ? SERVICE_SUBTYPE_SOURCE_VIRTUAL : SERVICE_SUBTYPE_SOURCE_MONITOR))) < 0) {
 
 		pw_log_error("avahi_entry_group_add_service_subtype(): %s",
-			avahi_strerror(avahi_client_errno(s->userdata->client)));
-		return;
+			avahi_strerror(avahi_client_errno(d->client)));
+		goto error;
 	}
 
 	if (!s->is_sink && s->subtype != SUBTYPE_MONITOR) {
 		if (avahi_entry_group_add_service_subtype(
 					s->entry_group,
-					AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC,
+					AVAHI_IF_UNSPEC, proto,
 					0,
 					s->service_name,
 					SERVICE_TYPE_SOURCE,
 					NULL,
 					SERVICE_SUBTYPE_SOURCE_NON_MONITOR) < 0) {
 			pw_log_error("avahi_entry_group_add_service_subtype(): %s",
-					avahi_strerror(avahi_client_errno(s->userdata->client)));
-			return;
+					avahi_strerror(avahi_client_errno(d->client)));
+			goto error;
 		}
 	}
 
 	if (avahi_entry_group_commit(s->entry_group) < 0) {
 		pw_log_error("avahi_entry_group_commit(): %s",
-				avahi_strerror(avahi_client_errno(s->userdata->client)));
-		return;
+				avahi_strerror(avahi_client_errno(d->client)));
+		goto error;
 	}
 
 	spa_list_remove(&s->link);
-	spa_list_append(&s->userdata->published, &s->link);
+	spa_list_append(&d->published, &s->link);
 
 	pw_log_info("created service: %s", s->service_name);
+	return;
+
+error:
+	s->published = false;
+	return;
 }
 
 static void publish_pending(struct module_zeroconf_publish_data *data)
@@ -571,6 +614,28 @@ static const struct pw_manager_events manager_events = {
 	.removed = manager_removed,
 };
 
+
+static void impl_server_started(void *data, struct server *server)
+{
+	struct module_zeroconf_publish_data *d = data;
+	pw_log_info("a new server is started, try publish");
+	publish_pending(d);
+}
+
+static void impl_server_stopped(void *data, struct server *server)
+{
+	struct module_zeroconf_publish_data *d = data;
+	pw_log_info("a server stopped, try republish");
+	unpublish_all_services(d);
+	publish_pending(d);
+}
+
+static const struct impl_events impl_events = {
+	VERSION_IMPL_EVENTS,
+	.server_started = impl_server_started,
+	.server_stopped = impl_server_stopped,
+};
+
 static int module_zeroconf_publish_load(struct client *client, struct module *module)
 {
 	struct module_zeroconf_publish_data *data = module->user_data;
@@ -607,6 +672,8 @@ static int module_zeroconf_publish_load(struct client *client, struct module *mo
 	pw_manager_add_listener(data->manager, &data->manager_listener,
 			&manager_events, data);
 
+	impl_add_listener(module->impl, &data->impl_listener, &impl_events, data);
+
 	return 0;
 }
 
@@ -614,6 +681,8 @@ static int module_zeroconf_publish_unload(struct module *module)
 {
 	struct module_zeroconf_publish_data *d = module->user_data;
 	struct service *s;
+
+	spa_hook_remove(&d->impl_listener);
 
 	unpublish_all_services(d);
 
@@ -642,7 +711,6 @@ static int module_zeroconf_publish_unload(struct module *module)
 static const struct spa_dict_item module_zeroconf_publish_info[] = {
 	{ PW_KEY_MODULE_AUTHOR, "Sanchayan Maity <sanchayan@asymptotic.io" },
 	{ PW_KEY_MODULE_DESCRIPTION, "mDNS/DNS-SD Service Publish" },
-	{ PW_KEY_MODULE_USAGE, "port=<TCP port number>" },
 	{ PW_KEY_MODULE_VERSION, PACKAGE_VERSION },
 };
 
@@ -652,7 +720,6 @@ static int module_zeroconf_publish_prepare(struct module * const module)
 
 	struct module_zeroconf_publish_data * const data = module->user_data;
 	data->module = module;
-	data->port = pw_properties_get_uint32(module->props, "port", PW_PROTOCOL_PULSE_DEFAULT_PORT);
 	spa_list_init(&data->pending);
 	spa_list_init(&data->published);
 

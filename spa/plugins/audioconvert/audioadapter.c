@@ -438,6 +438,9 @@ static int configure_format(struct impl *this, uint32_t flags, const struct spa_
 {
 	int res;
 
+	if (format == NULL && !this->have_format)
+		return 0;
+
 	spa_log_debug(this->log, "%p: configure format:", this);
 	if (format && spa_log_level_enabled(this->log, SPA_LOG_LEVEL_DEBUG))
 		spa_debug_format(0, NULL, format);
@@ -894,10 +897,11 @@ static void convert_node_info(void *data, const struct spa_node_info *info)
 				(this->params[idx].flags & SPA_PARAM_INFO_SERIAL) |
 				(info->params[i].flags & SPA_PARAM_INFO_READWRITE);
 
-			if (!this->add_listener) {
-				this->params[idx].user++;
-				spa_log_debug(this->log, "param %d changed", info->params[i].id);
-			}
+			if (this->add_listener)
+				continue;
+
+			this->params[idx].user++;
+			spa_log_debug(this->log, "param %d changed", info->params[i].id);
 		}
 	}
 	emit_node_info(this, false);
@@ -1002,10 +1006,11 @@ static void follower_info(void *data, const struct spa_node_info *info)
 				(this->params[idx].flags & SPA_PARAM_INFO_SERIAL) |
 				(info->params[i].flags & SPA_PARAM_INFO_READWRITE);
 
-			if (!this->add_listener) {
-				this->params[idx].user++;
-				spa_log_debug(this->log, "param %d changed", info->params[i].id);
-			}
+			if (this->add_listener)
+				continue;
+
+			this->params[idx].user++;
+			spa_log_debug(this->log, "param %d changed", info->params[i].id);
 		}
 	}
 	emit_node_info(this, false);
@@ -1082,26 +1087,32 @@ static void follower_port_info(void *data,
 			default:
 				continue;
 			}
+
 			if (!this->add_listener &&
 			    this->follower_params_flags[idx] == info->params[i].flags)
 				continue;
 
+			this->info.change_mask |= SPA_NODE_CHANGE_MASK_PARAMS;
 			this->follower_params_flags[idx] = info->params[i].flags;
 			this->params[idx].flags =
 				(this->params[idx].flags & SPA_PARAM_INFO_SERIAL) |
 				(info->params[i].flags & SPA_PARAM_INFO_READWRITE);
+
+			if (this->add_listener)
+				continue;
 
 			if (idx == IDX_Latency) {
 				res = recalc_latency(this, direction, port_id);
 				spa_log_debug(this->log, "latency: %d (%s)", res,
 						spa_strerror(res));
 			}
-
-			this->info.change_mask |= SPA_NODE_CHANGE_MASK_PARAMS;
-			if (!this->add_listener) {
-				this->params[idx].user++;
-				spa_log_debug(this->log, "param %d changed", info->params[i].id);
+			if (idx == IDX_EnumFormat) {
+				spa_log_debug(this->log, "new formats");
+				configure_format(this, 0, NULL);
 			}
+
+			this->params[idx].user++;
+			spa_log_debug(this->log, "param %d changed", info->params[i].id);
 		}
 	}
 	emit_node_info(this, false);

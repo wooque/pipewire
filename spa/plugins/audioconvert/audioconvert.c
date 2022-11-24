@@ -979,6 +979,7 @@ static int reconfigure_mode(struct impl *this, enum spa_param_port_config_mode m
 	}
 
 	this->monitor = monitor;
+	this->setup = false;
 	dir->control = control;
 	dir->have_profile = true;
 	dir->mode = mode;
@@ -1645,7 +1646,6 @@ static int port_enum_formats(void *object,
 			     struct spa_pod_builder *builder)
 {
 	struct impl *this = object;
-	struct port *port = GET_PORT(this, direction, port_id);
 
 	switch (index) {
 	case 0:
@@ -1659,11 +1659,7 @@ static int port_enum_formats(void *object,
 				SPA_TYPE_OBJECT_Format, SPA_PARAM_EnumFormat,
 				SPA_FORMAT_mediaType,      SPA_POD_Id(SPA_MEDIA_TYPE_application),
 				SPA_FORMAT_mediaSubtype,   SPA_POD_Id(SPA_MEDIA_SUBTYPE_control));
-		} else if (port->have_format) {
-			*param = spa_format_audio_raw_build(builder,
-				SPA_PARAM_EnumFormat, &this->dir[direction].format.info.raw);
-		}
-		else {
+		} else {
 			uint32_t rate = this->io_position ?
 				this->io_position->clock.rate.denom : DEFAULT_RATE;
 
@@ -1873,7 +1869,7 @@ static int port_set_latency(void *object,
 			   const struct spa_pod *latency)
 {
 	struct impl *this = object;
-	struct port *port;
+	struct port *port, *oport;
 	enum spa_direction other = SPA_DIRECTION_REVERSE(direction);
 	uint32_t i;
 
@@ -1895,10 +1891,10 @@ static int port_set_latency(void *object,
 	}
 
 	for (i = 0; i < this->dir[other].n_ports; i++) {
-		port = GET_PORT(this, other, i);
-		port->info.change_mask |= SPA_PORT_CHANGE_MASK_PARAMS;
-		port->params[IDX_Latency].user++;
-		emit_port_info(this, port, false);
+		oport = GET_PORT(this, other, i);
+		oport->info.change_mask |= SPA_PORT_CHANGE_MASK_PARAMS;
+		oport->params[IDX_Latency].user++;
+		emit_port_info(this, oport, false);
 	}
 	port->info.change_mask |= SPA_PORT_CHANGE_MASK_PARAMS;
 	port->params[IDX_Latency].user++;
@@ -1988,6 +1984,7 @@ static int port_set_format(void *object,
 			}
 			this->dir[direction].format = info;
 			this->dir[direction].have_format = true;
+			this->setup = false;
 		}
 		port->format = info;
 		port->have_format = true;

@@ -85,6 +85,7 @@
 #define DEFAULT_MIN_QUANTUM	"256/48000"
 #define DEFAULT_FORMAT		"F32"
 #define DEFAULT_POSITION	"[ FL FR ]"
+#define DEFAULT_IDLE_TIMEOUT	"5"
 
 #define MAX_FORMATS	32
 /* The max amount of data we send in one block when capturing. In PulseAudio this
@@ -1241,7 +1242,7 @@ static void stream_param_changed(void *data, uint32_t id, const struct spa_pod *
 				SPA_PROP_mute, 1, &val, 0);
 		}
 		if (stream->corked)
-			pw_stream_set_active(stream->stream, false);
+			stream_set_paused(stream, true, "cork after create");
 
 		/* if peer exists, reply immediately, otherwise reply when the link is created */
 		peer = find_linked(stream->client->manager, stream->id, stream->direction);
@@ -1276,6 +1277,7 @@ struct process_data {
 	uint32_t minreq;
 	uint32_t quantum;
 	unsigned int underrun:1;
+	unsigned int idle:1;
 };
 
 static int
@@ -1315,6 +1317,17 @@ do_process_done(struct spa_loop *loop,
 			else
 				stream_send_started(stream);
 		}
+		if (pd->idle) {
+			if (!stream->is_idle) {
+				stream->idle_time = stream->timestamp;
+			} else if (!stream->is_paused &&
+			    stream->idle_timeout_sec > 0 &&
+			    stream->timestamp - stream->idle_time >
+					(stream->idle_timeout_sec * SPA_NSEC_PER_SEC)) {
+				stream_set_paused(stream, true, "long underrun");
+			}
+		}
+		stream->is_idle = pd->idle;
 		stream->playing_for += pd->playing_for;
 		if (stream->underrun_for != (uint64_t)-1)
 			stream->underrun_for += pd->underrun_for;
@@ -1433,12 +1446,14 @@ static void stream_process(void *data)
 						stream->buffer, MAXLENGTH,
 						index % MAXLENGTH,
 						p, avail);
-					index += avail;
-					pd.read_inc = avail;
-					spa_ringbuffer_read_update(&stream->ring, index);
 				}
+				index += size;
+				pd.read_inc = size;
+				spa_ringbuffer_read_update(&stream->ring, index);
+
 				pd.playing_for = size;
 			}
+			pd.idle = true;
 			pw_log_debug("%p: [%s] underrun read:%u avail:%d max:%u",
 					stream, client->name, index, avail, minreq);
 		} else {
@@ -1523,7 +1538,7 @@ static void stream_drained(void *data)
 		reply_simple_ack(stream->client, stream->drain_tag);
 		stream->drain_tag = 0;
 
-		pw_stream_set_active(stream->stream, true);
+		stream_set_paused(stream, false, "complete drain");
 	}
 }
 
@@ -2701,7 +2716,7 @@ static int do_cork_stream(struct client *client, uint32_t command, uint32_t tag,
 		return -ENOENT;
 
 	stream->corked = cork;
-	pw_stream_set_active(stream->stream, !cork);
+	stream_set_paused(stream, cork, "cork request");
 	if (cork) {
 		stream->is_underrun = true;
 	} else {
@@ -3461,7 +3476,7 @@ static int do_drain_stream(struct client *client, uint32_t command, uint32_t tag
 
 	stream->drain_tag = tag;
 	stream->draining = true;
-	pw_stream_set_active(stream->stream, true);
+	stream_set_paused(stream, false, "drain start");
 
 	return 0;
 }
@@ -5460,6 +5475,8 @@ static void impl_clear(struct impl *impl)
 	pw_map_for_each(&impl->samples, impl_free_sample, impl);
 	pw_map_clear(&impl->samples);
 
+	spa_hook_list_clean(&impl->hooks);
+
 #ifdef HAVE_DBUS
 	if (impl->dbus_name) {
 		dbus_release_name(impl->dbus_name);
@@ -5499,8 +5516,10 @@ static int parse_frac(struct pw_properties *props, const char *key, const char *
 	if (props == NULL ||
 	    (str = pw_properties_get(props, key)) == NULL)
 		str = def;
-	if (sscanf(str, "%u/%u", &res->num, &res->denom) != 2 || res->denom == 0)
-		return -EINVAL;
+	if (sscanf(str, "%u/%u", &res->num, &res->denom) != 2 || res->denom == 0) {
+		pw_log_warn(": invalid fraction %s, default to %s", str, def);
+		sscanf(def, "%u/%u", &res->num, &res->denom);
+	}
 	pw_log_info(": defaults: %s = %u/%u", key, res->num, res->denom);
 	return 0;
 }
@@ -5540,7 +5559,21 @@ static int parse_format(struct pw_properties *props, const char *key, const char
 		pw_log_warn(": unknown format %s, default to %s", str, def);
 		res->format = format_name2id(def);
 	}
-	pw_log_info(": defaults: %s = %s", key, str);
+	pw_log_info(": defaults: %s = %s", key, format_id2name(res->format));
+	return 0;
+}
+static int parse_uint32(struct pw_properties *props, const char *key, const char *def,
+		uint32_t *res)
+{
+	const char *str;
+	if (props == NULL ||
+	    (str = pw_properties_get(props, key)) == NULL)
+		str = def;
+	if (!spa_atou32(str, res, 0)) {
+		pw_log_warn(": invalid uint32_t %s, default to %s", str, def);
+		spa_atou32(def, res, 0);
+	}
+	pw_log_info(": defaults: %s = %u", key, *res);
 	return 0;
 }
 
@@ -5554,6 +5587,7 @@ static void load_defaults(struct defs *def, struct pw_properties *props)
 	parse_frac(props, "pulse.min.quantum", DEFAULT_MIN_QUANTUM, &def->min_quantum);
 	parse_format(props, "pulse.default.format", DEFAULT_FORMAT, &def->sample_spec);
 	parse_position(props, "pulse.default.position", DEFAULT_POSITION, &def->channel_map);
+	parse_uint32(props, "pulse.idle.timeout", DEFAULT_IDLE_TIMEOUT, &def->idle_timeout);
 	def->sample_spec.channels = def->channel_map.channels;
 	def->quantum_limit = 8192;
 }
@@ -5598,6 +5632,7 @@ struct pw_protocol_pulse *pw_protocol_pulse_new(struct pw_context *context,
 
 	impl->work_queue = pw_context_get_work_queue(context);
 
+	spa_hook_list_init(&impl->hooks);
 	spa_list_init(&impl->servers);
 	impl->rate_limit.interval = 2 * SPA_NSEC_PER_SEC;
 	impl->rate_limit.burst = 1;
@@ -5647,6 +5682,13 @@ error_exit:
 		errno = -res;
 
 	return NULL;
+}
+
+void impl_add_listener(struct impl *impl,
+		struct spa_hook *listener,
+		const struct impl_events *events, void *data)
+{
+	spa_hook_list_append(&impl->hooks, listener, events, data);
 }
 
 void *pw_protocol_pulse_get_user_data(struct pw_protocol_pulse *pulse)
