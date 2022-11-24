@@ -64,6 +64,7 @@ struct stream *stream_new(struct client *client, enum stream_type type, uint32_t
 {
 	int res;
 	struct defs *defs = &client->impl->defs;
+	const char *str;
 
 	struct stream *stream = calloc(1, sizeof(*stream));
 	if (stream == NULL)
@@ -90,6 +91,9 @@ struct stream *stream_new(struct client *client, enum stream_type type, uint32_t
 	parse_frac(client->props, "pulse.default.req", &defs->default_req, &stream->default_req);
 	parse_frac(client->props, "pulse.default.frag", &defs->default_frag, &stream->default_frag);
 	parse_frac(client->props, "pulse.default.tlength", &defs->default_tlength, &stream->default_tlength);
+	stream->idle_timeout_sec = defs->idle_timeout;
+	if ((str = pw_properties_get(client->props, "pulse.idle.timeout")) != NULL)
+		spa_atou32(str, &stream->idle_timeout_sec, 0);
 
 	switch (type) {
 	case STREAM_TYPE_RECORD:
@@ -205,6 +209,20 @@ uint32_t stream_pop_missing(struct stream *stream)
 	stream->requested += missing;
 
 	return missing;
+}
+
+void stream_set_paused(struct stream *stream, bool paused, const char *reason)
+{
+	if (stream->is_paused == paused)
+		return;
+
+	if (reason && stream->client)
+		pw_log_info("%p: [%s] %s because of %s",
+				stream, stream->client->name,
+				paused ? "paused" : "resumed", reason);
+
+	stream->is_paused = paused;
+	pw_stream_set_active(stream->stream, !paused);
 }
 
 int stream_send_underflow(struct stream *stream, int64_t offset)

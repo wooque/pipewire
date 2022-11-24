@@ -191,6 +191,9 @@ static int handle_memblock(struct client *client, struct message *msg)
 
 	stream_send_request(stream);
 
+	if (stream->is_paused && !stream->corked)
+		stream_set_paused(stream, false, "new data");
+
 finish:
 	message_free(msg, false, false);
 	return res;
@@ -899,7 +902,7 @@ static struct server *server_new(struct impl *impl)
 
 static int server_start(struct server *server, const struct sockaddr_storage *addr)
 {
-	const struct impl * const impl = server->impl;
+	struct impl * const impl = server->impl;
 	int res = 0, fd;
 
 	switch (addr->ss_family) {
@@ -924,6 +927,8 @@ static int server_start(struct server *server, const struct sockaddr_storage *ad
 		res = -errno;
 		pw_log_error("server %p: can't create server source: %m", impl);
 	}
+	if (res >= 0)
+		spa_hook_list_call(&impl->hooks, struct impl_events, server_started, 0, server);
 
 	return res;
 }
@@ -1068,6 +1073,8 @@ void server_free(struct server *server)
 		spa_assert_se(client_detach(c));
 		client_unref(c);
 	}
+
+	spa_hook_list_call(&impl->hooks, struct impl_events, server_stopped, 0, server);
 
 	if (server->source)
 		pw_loop_destroy_source(impl->loop, server->source);

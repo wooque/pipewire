@@ -82,6 +82,7 @@ struct stream {
 	uint64_t playing_for;
 	uint64_t ticks_base;
 	uint64_t timestamp;
+	uint64_t idle_time;
 	int64_t delay;
 
 	uint32_t last_quantum;
@@ -93,6 +94,7 @@ struct stream {
 	struct spa_fraction default_frag;
 	struct spa_fraction default_tlength;
 	struct spa_fraction min_quantum;
+	uint32_t idle_timeout_sec;
 
 	struct sample_spec ss;
 	struct channel_map map;
@@ -115,6 +117,8 @@ struct stream {
 	unsigned int in_prebuf:1;
 	unsigned int killed:1;
 	unsigned int pending:1;
+	unsigned int is_idle:1;
+	unsigned int is_paused:1;
 };
 
 struct stream *stream_new(struct client *client, enum stream_type type, uint32_t create_tag,
@@ -123,6 +127,8 @@ struct stream *stream_new(struct client *client, enum stream_type type, uint32_t
 void stream_free(struct stream *stream);
 void stream_flush(struct stream *stream);
 uint32_t stream_pop_missing(struct stream *stream);
+
+void stream_set_paused(struct stream *stream, bool paused, const char *reason);
 
 int stream_send_underflow(struct stream *stream, int64_t offset);
 int stream_send_overflow(struct stream *stream);
