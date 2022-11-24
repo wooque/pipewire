@@ -6,6 +6,7 @@ pipewire (0.3.61-1) UNRELEASED; urgency=medium
       - bf3516ba: To avoid crashes when switching profiles
       - b46d8a8c: Make PipeWire in qemu work again
   * pipewire-audio-client-libraries: depend on ${misc:Depends}
+  * pipewire-jack: drop lintian-overrides, not relevant anymore
 
  -- Dylan Aïssi <daissi@debian.org>  Thu, 24 Nov 2022 11:45:36 +0100
 
