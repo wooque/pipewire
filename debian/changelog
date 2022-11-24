@@ -1,6 +1,10 @@
 pipewire (0.3.61-1) UNRELEASED; urgency=medium
 
   * New upstream release
+  * Drop patches included in upstream release:
+      - b720da77: pulse-server: also advance read pointer in underrun
+      - bf3516ba: To avoid crashes when switching profiles
+      - b46d8a8c: Make PipeWire in qemu work again
 
  -- Dylan Aïssi <daissi@debian.org>  Thu, 24 Nov 2022 11:45:36 +0100
 
