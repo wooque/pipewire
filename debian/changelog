@@ -11,6 +11,7 @@ pipewire (0.3.61-1) UNRELEASED; urgency=medium
   * pipewire-audio-client-libraries: depend on ${misc:Depends}
   * pipewire-jack: drop lintian-overrides, not relevant anymore
   * pipewire-libcamera: set minimum libcamera to 0.0.1
+  * Drop debian/libspa-0.2-vulkan.install, not used
 
  -- Dylan Aïssi <daissi@debian.org>  Thu, 24 Nov 2022 11:45:36 +0100
 
