@@ -18,6 +18,12 @@ else
 BLUEZ5_CODEC_LDAC=enabled
 endif
 
+ifneq (,$(filter m68k x32,$(DEB_HOST_ARCH)))
+LIBCAMERA=disabled
+else
+LIBCAMERA=enabled
+endif
+
 # lilv and some of its dependencies are in universe
 ifeq (yes,$(shell dpkg-vendor --derives-from Ubuntu && echo yes))
 LV2=disabled
@@ -36,7 +42,7 @@ override_dh_auto_configure:
 		-Dbluez5-codec-lc3plus=disabled \
 		-Dbluez5-codec-ldac=$(BLUEZ5_CODEC_LDAC) \
 		-Dbluez5-codec-opus=enabled \
-		-Dlibcamera=enabled \
+		-Dlibcamera=$(LIBCAMERA) \
 		-Ddocs=$(DOCS) \
 		-Dffmpeg=disabled \
 		-Dinstalled_tests=enabled \
