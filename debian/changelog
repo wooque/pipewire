@@ -1,4 +1,4 @@
-pipewire (0.3.62-1) UNRELEASED; urgency=medium
+pipewire (0.3.62-1) unstable; urgency=medium
 
   * New upstream release
   * Don't build the legacy volume SPA plugin, as per upstream: this
@@ -9,7 +9,7 @@ pipewire (0.3.62-1) UNRELEASED; urgency=medium
      /usr/share/doc/libpipewire-0.3-0/ to make it easier to find.
      (Closes: #1024815)
 
- -- Dylan Aïssi <daissi@debian.org>  Fri, 09 Dec 2022 11:55:18 +0100
+ -- Dylan Aïssi <daissi@debian.org>  Fri, 09 Dec 2022 14:03:00 +0100
 
 pipewire (0.3.61-1) unstable; urgency=medium
 
