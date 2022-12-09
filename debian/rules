@@ -52,7 +52,6 @@ override_dh_auto_configure:
 		-Dsession-managers= \
 		-Dtest=enabled \
 		-Dvideotestsrc=enabled \
-		-Dvolume=enabled \
 		-Dvulkan=disabled \
 		$(NULL)
 	install -d debian/ld.so.conf.d

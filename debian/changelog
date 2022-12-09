@@ -1,6 +1,8 @@
 pipewire (0.3.62-1) UNRELEASED; urgency=medium
 
   * New upstream release
+  * Don't build the legacy volume SPA plugin, as per upstream: this
+     volume plugin was an experiment that's not really used anywhere.
   * Disable libcamera plugin for m68k and x32,
      because the libcamera minimum version is not available.
   * Install upstream NEWS file in /usr/share/doc/pipewire instead of
