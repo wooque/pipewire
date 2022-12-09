@@ -1,5 +1,5 @@
 project('pipewire', ['c' ],
-  version : '0.3.61',
+  version : '0.3.62',
   license : [ 'MIT', 'LGPL-2.1-or-later', 'GPL-2.0-only' ],
   meson_version : '>= 0.59.0',
   default_options : [ 'warning_level=3',
@@ -300,6 +300,9 @@ glib2_dep = dependency('glib-2.0', required : get_option('flatpak'))
 summary({'GLib-2.0 (Flatpak support)': glib2_dep.found()}, bool_yn: true, section: 'Misc dependencies')
 flatpak_support = glib2_dep.found()
 cdata.set('HAVE_GLIB2', flatpak_support)
+
+gio_dep = dependency('gio-2.0', version : '>= 2.26.0', required : get_option('gsettings'))
+summary({'GIO (GSettings)': gio_dep.found()}, bool_yn: true, section: 'Misc dependencies')
 
 gst_option = get_option('gstreamer')
 gst_deps_def = {

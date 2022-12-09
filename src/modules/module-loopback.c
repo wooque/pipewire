@@ -451,25 +451,11 @@ static int setup_streams(struct impl *impl)
 			&impl->playback_listener,
 			&out_stream_events, impl);
 
-	n_params = 0;
-	spa_pod_builder_init(&b, buffer, sizeof(buffer));
-	params[n_params++] = spa_format_audio_raw_build(&b, SPA_PARAM_EnumFormat,
-			&impl->capture_info);
-
-	if ((res = pw_stream_connect(impl->capture,
-			PW_DIRECTION_INPUT,
-			PW_ID_ANY,
-			PW_STREAM_FLAG_AUTOCONNECT |
-			PW_STREAM_FLAG_MAP_BUFFERS |
-			PW_STREAM_FLAG_RT_PROCESS,
-			params, n_params)) < 0)
-		return res;
-
+	/* connect playback first to activate it before capture triggers it */
 	n_params = 0;
 	spa_pod_builder_init(&b, buffer, sizeof(buffer));
 	params[n_params++] = spa_format_audio_raw_build(&b, SPA_PARAM_EnumFormat,
 			&impl->playback_info);
-
 	if ((res = pw_stream_connect(impl->playback,
 			PW_DIRECTION_OUTPUT,
 			PW_ID_ANY,
@@ -480,6 +466,19 @@ static int setup_streams(struct impl *impl)
 			params, n_params)) < 0)
 		return res;
 
+	n_params = 0;
+	spa_pod_builder_init(&b, buffer, sizeof(buffer));
+	params[n_params++] = spa_format_audio_raw_build(&b, SPA_PARAM_EnumFormat,
+			&impl->capture_info);
+	if ((res = pw_stream_connect(impl->capture,
+			PW_DIRECTION_INPUT,
+			PW_ID_ANY,
+			PW_STREAM_FLAG_AUTOCONNECT |
+			PW_STREAM_FLAG_MAP_BUFFERS |
+			PW_STREAM_FLAG_RT_PROCESS,
+			params, n_params)) < 0)
+		return res;
+
 	return 0;
 }
 
@@ -487,8 +486,13 @@ static void core_error(void *data, uint32_t id, int seq, int res, const char *me
 {
 	struct impl *impl = data;
 
-	pw_log_error("error id:%u seq:%d res:%d (%s): %s",
-			id, seq, res, spa_strerror(res), message);
+	if (res == -ENOENT) {
+		pw_log_info("message id:%u seq:%d res:%d (%s): %s",
+				id, seq, res, spa_strerror(res), message);
+	} else {
+		pw_log_warn("error id:%u seq:%d res:%d (%s): %s",
+				id, seq, res, spa_strerror(res), message);
+	}
 
 	if (id == PW_ID_CORE && res == -EPIPE)
 		pw_impl_module_schedule_destroy(impl->module);
@@ -513,11 +517,11 @@ static const struct pw_proxy_events core_proxy_events = {
 
 static void impl_destroy(struct impl *impl)
 {
-	/* disconnect both streams before destroying any of them */
+	/* deactivate both streams before destroying any of them */
 	if (impl->capture)
-		pw_stream_disconnect(impl->capture);
+		pw_stream_set_active(impl->capture, false);
 	if (impl->playback)
-		pw_stream_disconnect(impl->playback);
+		pw_stream_set_active(impl->playback, false);
 
 	if (impl->capture)
 		pw_stream_destroy(impl->capture);

@@ -622,8 +622,8 @@ int pw_impl_link_activate(struct pw_impl_link *this)
 	pw_log_debug("%p: activate activated:%d state:%s", this, impl->activated,
 			pw_link_state_as_string(this->info.state));
 
-	if (impl->activated || !this->prepared || !impl->inode->active ||
-			!impl->inode->added || !impl->onode->active)
+	if (impl->activated || !this->prepared ||
+		!impl->inode->active || !impl->onode->active)
 		return 0;
 
 	if (!impl->io_set) {
@@ -812,7 +812,7 @@ do_deactivate_link(struct spa_loop *loop,
 	spa_list_remove(&this->rt.out_mix.rt_link);
 	spa_list_remove(&this->rt.in_mix.rt_link);
 
-	if (this->input->node != this->output->node) {
+	if (impl->inode != impl->onode) {
 		struct pw_node_activation_state *state;
 
 		spa_list_remove(&this->rt.target.link);
