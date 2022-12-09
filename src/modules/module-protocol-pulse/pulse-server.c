@@ -85,7 +85,7 @@
 #define DEFAULT_MIN_QUANTUM	"256/48000"
 #define DEFAULT_FORMAT		"F32"
 #define DEFAULT_POSITION	"[ FL FR ]"
-#define DEFAULT_IDLE_TIMEOUT	"5"
+#define DEFAULT_IDLE_TIMEOUT	"0"
 
 #define MAX_FORMATS	32
 /* The max amount of data we send in one block when capturing. In PulseAudio this
@@ -5131,6 +5131,7 @@ static int do_load_module(struct client *client, uint32_t command, uint32_t tag,
 		.sync = on_load_module_manager_sync,
 	};
 
+	struct impl *impl = client->impl;
 	const char *name, *argument;
 	struct module *module;
 	struct pending_module *pm;
@@ -5145,7 +5146,7 @@ static int do_load_module(struct client *client, uint32_t command, uint32_t tag,
 	pw_log_info("[%s] %s name:%s argument:%s",
 			client->name, commands[command].name, name, argument);
 
-	module = module_create(client, name, argument);
+	module = module_create(impl, name, argument);
 	if (module == NULL)
 		return -errno;
 
@@ -5159,7 +5160,7 @@ static int do_load_module(struct client *client, uint32_t command, uint32_t tag,
 
 	pw_log_debug("pending module %p: start tag:%d", pm, tag);
 
-	r = module_load(client, module);
+	r = module_load(module);
 
 	module_add_listener(module, &pm->module_listener, &module_events, pm);
 	client_add_listener(client, &pm->client_listener, &client_events, pm);

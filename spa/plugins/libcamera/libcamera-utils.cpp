@@ -74,7 +74,7 @@ static void spa_libcamera_get_config(struct impl *impl)
 		return;
 
 	StreamRoles roles;
-	roles.push_back(VideoRecording);
+	roles.push_back(StreamRole::VideoRecording);
 	impl->config = impl->camera->generateConfiguration(roles);
 }
 
@@ -500,28 +500,48 @@ next:
 			0);
 
 	switch (ctrl_id->type()) {
-	case ControlTypeBool:
+	case ControlTypeBool: {
+		bool def;
+		if (ctrl_info.def().isNone())
+			def = ctrl_info.min().get<bool>();
+		else
+			def = ctrl_info.def().get<bool>();
+
 		spa_pod_builder_add(&b,
-				SPA_PROP_INFO_type, SPA_POD_CHOICE_Bool(
-						(bool)ctrl_info.def().get<bool>()),
-				0);
-		break;
-	case ControlTypeFloat:
+					SPA_PROP_INFO_type, SPA_POD_CHOICE_Bool(
+							def),
+					0);
+	} break;
+	case ControlTypeFloat: {
+		float min = ctrl_info.min().get<float>();
+		float max = ctrl_info.max().get<float>();
+		float def;
+
+		if (ctrl_info.def().isNone())
+			def = (min + max) / 2;
+		else
+			def = ctrl_info.def().get<float>();
+
 		spa_pod_builder_add(&b,
 				SPA_PROP_INFO_type, SPA_POD_CHOICE_RANGE_Float(
-						(float)ctrl_info.def().get<float>(),
-						(float)ctrl_info.min().get<float>(),
-						(float)ctrl_info.max().get<float>()),
+						def, min, max),
 				0);
-		break;
-	case ControlTypeInteger32:
+	} break;
+	case ControlTypeInteger32: {
+		int32_t min = ctrl_info.min().get<int32_t>();
+		int32_t max = ctrl_info.max().get<int32_t>();
+		int32_t def;
+
+		if (ctrl_info.def().isNone())
+			def = (min + max) / 2;
+		else
+			def = ctrl_info.def().get<int32_t>();
+
 		spa_pod_builder_add(&b,
 				SPA_PROP_INFO_type, SPA_POD_CHOICE_RANGE_Int(
-						(int32_t)ctrl_info.def().get<int32_t>(),
-						(int32_t)ctrl_info.min().get<int32_t>(),
-						(int32_t)ctrl_info.max().get<int32_t>()),
+						def, min, max),
 				0);
-		break;
+	} break;
 	default:
 		goto next;
 	}
@@ -678,6 +698,31 @@ static int spa_libcamera_use_buffers(struct impl *impl, struct port *port,
 	return -ENOTSUP;
 }
 
+static const struct {
+	Transform libcamera_transform;
+	uint32_t spa_transform_value;
+} transform_map[] = {
+	{ Transform::Identity, SPA_META_TRANSFORMATION_None },
+	{ Transform::Rot0, SPA_META_TRANSFORMATION_None },
+	{ Transform::HFlip, SPA_META_TRANSFORMATION_Flipped },
+	{ Transform::VFlip, SPA_META_TRANSFORMATION_Flipped180 },
+	{ Transform::HVFlip, SPA_META_TRANSFORMATION_180 },
+	{ Transform::Rot180, SPA_META_TRANSFORMATION_180 },
+	{ Transform::Transpose, SPA_META_TRANSFORMATION_Flipped90 },
+	{ Transform::Rot90, SPA_META_TRANSFORMATION_90 },
+	{ Transform::Rot270, SPA_META_TRANSFORMATION_270 },
+	{ Transform::Rot180Transpose, SPA_META_TRANSFORMATION_Flipped270 },
+};
+
+static uint32_t libcamera_transform_to_spa_transform_value(Transform transform)
+{
+	for (const auto& t : transform_map) {
+		if (t.libcamera_transform == transform)
+			return t.spa_transform_value;
+	}
+	return SPA_META_TRANSFORMATION_None;
+}
+
 static int
 mmap_init(struct impl *impl, struct port *port,
 		struct spa_buffer **buffers, uint32_t n_buffers)
@@ -721,6 +766,16 @@ mmap_init(struct impl *impl, struct port *port,
 		b->outbuf = buffers[i];
 		b->flags = BUFFER_FLAG_OUTSTANDING;
 		b->h = (struct spa_meta_header*)spa_buffer_find_meta_data(buffers[i], SPA_META_Header, sizeof(*b->h));
+
+		b->videotransform = (struct spa_meta_videotransform*)spa_buffer_find_meta_data(
+			buffers[i], SPA_META_VideoTransform, sizeof(*b->videotransform));
+		if (b->videotransform) {
+			b->videotransform->transform =
+				libcamera_transform_to_spa_transform_value(impl->config->transform);
+			spa_log_debug(impl->log, "Setting videotransform for buffer %d to %u (from %s)",
+				i, b->videotransform->transform, transformToString(impl->config->transform));
+
+		}
 
 		d = buffers[i]->datas;
 		for(j = 0; j < buffers[i]->n_datas; ++j) {

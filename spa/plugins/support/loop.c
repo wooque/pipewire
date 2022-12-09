@@ -89,7 +89,7 @@ struct impl {
 	uint8_t *buffer_data;
 	uint8_t buffer_mem[DATAS_SIZE + MAX_ALIGN];
 
-	unsigned int flushing:1;
+	uint32_t flush_count;
 	unsigned int polling:1;
 };
 
@@ -166,23 +166,39 @@ static int loop_remove_source(void *object, struct spa_source *source)
 
 static void flush_items(struct impl *impl)
 {
-	uint32_t index;
+	uint32_t index, flush_count;
+	int32_t avail;
 	int res;
 
-	impl->flushing = true;
-	while (spa_ringbuffer_get_read_index(&impl->buffer, &index) > 0) {
+	flush_count = ++impl->flush_count;
+	avail = spa_ringbuffer_get_read_index(&impl->buffer, &index);
+	while (avail > 0) {
 		struct invoke_item *item;
 		bool block;
+		spa_invoke_func_t func;
 
 		item = SPA_PTROFF(impl->buffer_data, index & (DATAS_SIZE - 1), struct invoke_item);
 		block = item->block;
+		func = item->func;
 
 		spa_log_trace_fp(impl->log, "%p: flush item %p", impl, item);
-		item->res = item->func ? item->func(&impl->loop,
-				true, item->seq, item->data, item->size,
-			   item->user_data) : 0;
+		/* first we remove the function from the item so that recursive
+		 * calls don't call the callback again. We can't update the
+		 * read index before we call the function because then the item
+		 * might get overwritten. */
+		item->func = NULL;
+		if (func)
+			item->res = func(&impl->loop, true, item->seq, item->data,
+				item->size, item->user_data);
 
-		spa_ringbuffer_read_update(&impl->buffer, index + item->item_size);
+		/* if this function did a recursive invoke, it now flushed the
+		 * ringbuffer and we can exit */
+		if (flush_count != impl->flush_count)
+			break;
+
+		index += item->item_size;
+		avail -= item->item_size;
+		spa_ringbuffer_read_update(&impl->buffer, index);
 
 		if (block) {
 			if ((res = spa_system_eventfd_write(impl->system, impl->ack_fd, 1)) < 0)
@@ -190,20 +206,21 @@ static void flush_items(struct impl *impl)
 						impl, impl->ack_fd, spa_strerror(res));
 		}
 	}
-	impl->flushing = false;
 }
 
 static int
 loop_invoke_inthread(struct impl *impl,
-	    spa_invoke_func_t func,
-	    uint32_t seq,
-	    const void *data,
-	    size_t size,
-	    bool block,
-	    void *user_data)
+		spa_invoke_func_t func,
+		uint32_t seq,
+		const void *data,
+		size_t size,
+		bool block,
+		void *user_data)
 {
-	if (!impl->flushing)
-		flush_items(impl);
+	/* we should probably have a second ringbuffer for the in-thread pending
+	 * callbacks. A recursive callback when flushing will insert itself
+	 * before this one. */
+	flush_items(impl);
 	return func ? func(&impl->loop, true, seq, data, size, user_data) : 0;
 }
 
@@ -222,6 +239,9 @@ loop_invoke(void *object,
 	int32_t filled;
 	uint32_t avail, idx, offset, l0;
 
+	/* the ringbuffer can only be written to from one thread, if we are
+	 * in the same thread as the loop, don't write into the ringbuffer
+	 * but try to emit the calback right away after flushing what we have */
 	if (impl->thread == 0 || pthread_equal(impl->thread, pthread_self()))
 		return loop_invoke_inthread(impl, func, seq, data, size, block, user_data);
 
@@ -247,6 +267,7 @@ loop_invoke(void *object,
 	item->size = size;
 	item->block = block;
 	item->user_data = user_data;
+	item->res = 0;
 	item->item_size = SPA_ROUND_UP_N(sizeof(struct invoke_item) + size, ITEM_ALIGN);
 
 	spa_log_trace_fp(impl->log, "%p: add item %p filled:%d", impl, item, filled);
@@ -585,10 +606,12 @@ static void source_event_func(struct spa_source *source)
 	uint64_t count = 0;
 	int res;
 
-	if ((res = spa_system_eventfd_read(s->impl->system, source->fd, &count)) < 0)
-		spa_log_warn(s->impl->log, "%p: failed to read event fd:%d: %s",
-				source, source->fd, spa_strerror(res));
-
+	if ((res = spa_system_eventfd_read(s->impl->system, source->fd, &count)) < 0) {
+		if (res != -EAGAIN)
+			spa_log_warn(s->impl->log, "%p: failed to read event fd:%d: %s",
+					source, source->fd, spa_strerror(res));
+		return;
+	}
 	s->func.event(source->data, count);
 }
 
@@ -651,10 +674,12 @@ static void source_timer_func(struct spa_source *source)
 	int res;
 
 	if (SPA_UNLIKELY((res = spa_system_timerfd_read(s->impl->system,
-				source->fd, &expirations)) < 0))
-		spa_log_warn(s->impl->log, "%p: failed to read timer fd:%d: %s",
-				source, source->fd, spa_strerror(res));
-
+				source->fd, &expirations)) < 0)) {
+		if (res != -EAGAIN)
+			spa_log_warn(s->impl->log, "%p: failed to read timer fd:%d: %s",
+					source, source->fd, spa_strerror(res));
+		return;
+	}
 	s->func.timer(source->data, expirations);
 }
 
@@ -731,10 +756,12 @@ static void source_signal_func(struct spa_source *source)
 	struct source_impl *s = SPA_CONTAINER_OF(source, struct source_impl, source);
 	int res, signal_number = 0;
 
-	if ((res = spa_system_signalfd_read(s->impl->system, source->fd, &signal_number)) < 0)
-		spa_log_warn(s->impl->log, "%p: failed to read signal fd:%d: %s",
-				source, source->fd, spa_strerror(res));
-
+	if ((res = spa_system_signalfd_read(s->impl->system, source->fd, &signal_number)) < 0) {
+		if (res != -EAGAIN)
+			spa_log_warn(s->impl->log, "%p: failed to read signal fd:%d: %s",
+					source, source->fd, spa_strerror(res));
+		return;
+	}
 	s->func.signal(source->data, signal_number);
 }
 

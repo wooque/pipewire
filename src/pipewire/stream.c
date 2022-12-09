@@ -324,7 +324,8 @@ static inline int queue_push(struct stream *stream, struct queue *queue, struct 
 {
 	uint32_t index;
 
-	if (SPA_FLAG_IS_SET(buffer->flags, BUFFER_FLAG_QUEUED))
+	if (SPA_FLAG_IS_SET(buffer->flags, BUFFER_FLAG_QUEUED) ||
+	    buffer->id >= stream->n_buffers)
 		return -EINVAL;
 
 	SPA_FLAG_SET(buffer->flags, BUFFER_FLAG_QUEUED);
@@ -921,6 +922,9 @@ static int impl_port_use_buffers(void *object,
 	if (impl->disconnecting && n_buffers > 0)
 		return -EIO;
 
+	if (n_buffers > MAX_BUFFERS)
+		return -EINVAL;
+
 	prot = PROT_READ | (direction == SPA_DIRECTION_OUTPUT ? PROT_WRITE : 0);
 
 	clear_buffers(stream);
@@ -956,6 +960,7 @@ static int impl_port_use_buffers(void *object,
 		pw_log_debug("%p: got buffer id:%d datas:%d, mapped size %d", stream, i,
 				buffers[i]->n_datas, size);
 	}
+	impl->n_buffers = n_buffers;
 
 	for (i = 0; i < n_buffers; i++) {
 		struct buffer *b = &impl->buffers[i];
@@ -972,9 +977,6 @@ static int impl_port_use_buffers(void *object,
 
 		pw_stream_emit_add_buffer(stream, &b->this);
 	}
-
-	impl->n_buffers = n_buffers;
-
 	return 0;
 }
 
@@ -1000,6 +1002,7 @@ static int impl_node_process_input(void *object)
 	if (io->status == SPA_STATUS_HAVE_DATA &&
 	    (b = get_buffer(stream, io->buffer_id)) != NULL) {
 		/* push new buffer */
+		pw_log_trace_fp("%p: push %d %p", stream, b->id, io);
 		if (queue_push(impl, &impl->dequeued, b) == 0) {
 			copy_position(impl, impl->dequeued.incount);
 			if (b->busy)
@@ -1007,13 +1010,15 @@ static int impl_node_process_input(void *object)
 			call_process(impl);
 		}
 	}
-	if (io->status != SPA_STATUS_NEED_DATA) {
+	if (io->status != SPA_STATUS_NEED_DATA || io->buffer_id == SPA_ID_INVALID) {
 		/* pop buffer to recycle */
 		if ((b = queue_pop(impl, &impl->queued))) {
 			pw_log_trace_fp("%p: recycle buffer %d", stream, b->id);
-		} else if (io->status == -EPIPE)
-			return io->status;
-		io->buffer_id = b ? b->id : SPA_ID_INVALID;
+			io->buffer_id = b->id;
+		} else {
+			pw_log_trace_fp("%p: no buffers to recycle", stream);
+			io->buffer_id = SPA_ID_INVALID;
+		}
 		io->status = SPA_STATUS_NEED_DATA;
 	}
 	if (impl->driving && impl->using_trigger)
