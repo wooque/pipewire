@@ -1,4 +1,5 @@
 Don-t-automatically-start-pipewire-for-root-logins.patch
 Don-t-build_same_binary_twice.patch
 Fix_services.patch
-# Recommended patch for 0.3.6X
+# Recommended patch for 0.3.62
+cbc75dc98d7d57ce6c4e137146142707ecbcf754.patch

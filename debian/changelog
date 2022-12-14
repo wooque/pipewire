@@ -1,3 +1,11 @@
+pipewire (0.3.62-2) UNRELEASED; urgency=medium
+
+  * Cherry-pick upstream patch:
+      - cbc75dc9: pw-mon: recognize -N and -C as valid options
+          (Closes: #1025900)
+
+ -- Dylan Aïssi <daissi@debian.org>  Wed, 14 Dec 2022 13:07:30 +0100
+
 pipewire (0.3.62-1) unstable; urgency=medium
 
   * New upstream release
