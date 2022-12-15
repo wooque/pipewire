@@ -2,6 +2,7 @@ pipewire (0.3.63-1) UNRELEASED; urgency=medium
 
   * New upstream release
       - pw-mon: recognize -N and -C as valid options (Closes: #1025900)
+  * Update symbols file
 
  -- Dylan Aïssi <daissi@debian.org>  Thu, 15 Dec 2022 11:19:05 +0100
 
