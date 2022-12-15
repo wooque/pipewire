@@ -10,7 +10,7 @@ Build-Depends: debhelper-compat (= 13),
                libasound2-dev,
                libavahi-client-dev,
                libbluetooth-dev,
-               libcamera-dev (>= 0.0.1) [!m68k !x32],
+               libcamera-dev (>= 0.0.1) [!m68k],
                libdbus-1-dev,
                libfreeaptx-dev,
                libglib2.0-dev,
@@ -308,7 +308,7 @@ Description: PipeWire V4L2 plugin
 
 Package: pipewire-libcamera
 Section: video
-Architecture: linux-any
+Architecture: amd64 arm64 armel armhf i386 mips64el mipsel ppc64el s390x alpha hppa ia64 powerpc ppc64 riscv64 sh4 sparc64 x32
 Multi-Arch: same
 Depends: pipewire (= ${binary:Version}),
          ${misc:Depends},
