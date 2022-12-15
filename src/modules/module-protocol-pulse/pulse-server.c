@@ -57,6 +57,7 @@
 #include "client.h"
 #include "collect.h"
 #include "commands.h"
+#include "cmd.h"
 #include "dbus-name.h"
 #include "defs.h"
 #include "extension.h"
@@ -93,6 +94,8 @@
 #define MAX_BLOCK	(64*1024)
 
 #define TEMPORARY_MOVE_TIMEOUT	(SPA_NSEC_PER_SEC)
+
+PW_LOG_TOPIC_EXTERN(pulse_conn);
 
 bool debug_messages = false;
 
@@ -5625,7 +5628,7 @@ struct pw_protocol_pulse *pw_protocol_pulse_new(struct pw_context *context,
 
 	load_defaults(&impl->defs, props);
 
-	debug_messages = pw_debug_is_category_enabled("connection");
+	debug_messages = pw_log_topic_enabled(SPA_LOG_LEVEL_INFO, pulse_conn);
 
 	impl->context = context;
 	impl->loop = pw_context_get_main_loop(context);
@@ -5670,6 +5673,7 @@ struct pw_protocol_pulse *pw_protocol_pulse_new(struct pw_context *context,
 #ifdef HAVE_DBUS
 	impl->dbus_name = dbus_request_name(context, "org.pulseaudio.Server");
 #endif
+	cmd_run(impl);
 
 	return (struct pw_protocol_pulse *) impl;
 

@@ -31,7 +31,9 @@
 #endif
 
 #include <spa/utils/json.h>
+#include <spa/utils/result.h>
 #include <spa/support/cpu.h>
+#include <spa/plugins/audioconvert/resample.h>
 
 #include <pipewire/log.h>
 
@@ -539,6 +541,71 @@ static float *create_dirac(const char *filename, float gain, int delay, int offs
 	return samples;
 }
 
+static float *resample_buffer(float *samples, int *n_samples,
+		unsigned long in_rate, unsigned long out_rate, uint32_t quality)
+{
+	uint32_t in_len, out_len, total_out = 0;
+	int out_n_samples;
+	float *out_samples, *out_buf, *in_buf;
+	struct resample r;
+	int res;
+
+	spa_zero(r);
+	r.channels = 1;
+	r.i_rate = in_rate;
+	r.o_rate = out_rate;
+	r.cpu_flags = dsp_ops.cpu_flags;
+	r.quality = quality;
+	if ((res = resample_native_init(&r)) < 0) {
+		pw_log_error("resampling failed: %s", spa_strerror(res));
+		errno = -res;
+		return NULL;
+	}
+
+	out_n_samples = SPA_ROUND_UP(*n_samples * out_rate, in_rate) / in_rate;
+	out_samples = calloc(out_n_samples, sizeof(float));
+	if (out_samples == NULL)
+		goto error;
+
+	in_len = *n_samples;
+	in_buf = samples;
+	out_len = out_n_samples;
+	out_buf = out_samples;
+
+	pw_log_info("Resampling filter: rate: %lu => %lu, n_samples: %u => %u, q:%u",
+		    in_rate, out_rate, in_len, out_len, quality);
+
+	resample_process(&r, (void*)&in_buf, &in_len, (void*)&out_buf, &out_len);
+	pw_log_debug("resampled: %u -> %u samples", in_len, out_len);
+	total_out += out_len;
+
+	in_len = resample_delay(&r);
+	in_buf = calloc(in_len, sizeof(float));
+	if (in_buf == NULL)
+		goto error;
+
+	out_buf = out_samples + total_out;
+	out_len = out_n_samples - total_out;
+
+	pw_log_debug("flushing resampler: %u in %u out", in_len, out_len);
+	resample_process(&r, (void*)&in_buf, &in_len, (void*)&out_buf, &out_len);
+	pw_log_debug("flushed: %u -> %u samples", in_len, out_len);
+	total_out += out_len;
+
+	free(in_buf);
+	free(samples);
+	resample_free(&r);
+
+	*n_samples = total_out;
+	return out_samples;
+
+error:
+	resample_free(&r);
+	free(samples);
+	free(out_samples);
+	return NULL;
+}
+
 static void * convolver_instantiate(const struct fc_descriptor * Descriptor,
 		unsigned long SampleRate, int index, const char *config)
 {
@@ -551,6 +618,7 @@ static void * convolver_instantiate(const struct fc_descriptor * Descriptor,
 	char filename[PATH_MAX] = "";
 	int blocksize = 0, tailsize = 0;
 	int delay = 0;
+	int resample_quality = RESAMPLE_DEFAULT_QUALITY;
 	float gain = 1.0f;
 	unsigned long rate;
 
@@ -611,6 +679,12 @@ static void * convolver_instantiate(const struct fc_descriptor * Descriptor,
 				return NULL;
 			}
 		}
+		else if (spa_streq(key, "resample_quality")) {
+			if (spa_json_get_int(&it[1], &resample_quality) <= 0) {
+				pw_log_error("convolver:resample_quality requires a number");
+				return NULL;
+			}
+		}
 		else if (spa_json_next(&it[1], &val) < 0)
 			break;
 	}
@@ -634,10 +708,9 @@ static void * convolver_instantiate(const struct fc_descriptor * Descriptor,
 		rate = SampleRate;
 		samples = read_samples(filename, gain, delay, offset,
 				length, channel, &rate, &n_samples);
-		if (rate != SampleRate) {
-			pw_log_warn("Convolver samplerate %lu doesn't match filter rate %lu. "
-					"Consider forcing a filter rate.", rate, SampleRate);
-		}
+		if (rate != SampleRate)
+			samples = resample_buffer(samples, &n_samples,
+					rate, SampleRate, resample_quality);
 	}
 	if (samples == NULL) {
 		errno = ENOENT;
