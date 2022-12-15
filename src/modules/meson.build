@@ -100,7 +100,7 @@ filter_chain_sources = [
   'module-filter-chain/convolver.c'
 ]
 filter_chain_dependencies = [
-  mathlib, dl_lib, pipewire_dep, sndfile_dep
+  mathlib, dl_lib, pipewire_dep, sndfile_dep, audioconvert_dep
 ]
 
 if lilv_lib.found()
@@ -226,6 +226,7 @@ pipewire_module_protocol_pulse_sources = [
   'module-protocol-pulse.c',
   'module-protocol-pulse/client.c',
   'module-protocol-pulse/collect.c',
+  'module-protocol-pulse/cmd.c',
   'module-protocol-pulse/extension.c',
   'module-protocol-pulse/extensions/ext-device-manager.c',
   'module-protocol-pulse/extensions/ext-device-restore.c',

@@ -64,7 +64,6 @@ struct plugin {
 	char *filename;
 	void *hnd;
 	spa_handle_factory_enum_func_t enum_func;
-	struct spa_list handles;
 	int ref;
 };
 
@@ -78,10 +77,10 @@ struct handle {
 
 struct registry {
 	struct spa_list plugins;
+	struct spa_list handles; /* all handles across all plugins by age (youngest first) */
 };
 
 struct support {
-	char **categories;
 	const char *plugin_dir;
 	const char *support_lib;
 	struct registry registry;
@@ -93,6 +92,7 @@ struct support {
 	unsigned int in_valgrind:1;
 	unsigned int no_color:1;
 	unsigned int no_config:1;
+	unsigned int do_dlclose:1;
 };
 
 static pthread_mutex_t init_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -149,7 +149,6 @@ open_plugin(struct registry *registry,
 	plugin->filename = strdup(filename);
 	plugin->hnd = hnd;
 	plugin->enum_func = enum_func;
-	spa_list_init(&plugin->handles);
 
 	spa_list_append(&registry->plugins, &plugin->link);
 
@@ -168,7 +167,7 @@ unref_plugin(struct plugin *plugin)
 	if (--plugin->ref == 0) {
 		spa_list_remove(&plugin->link);
 		pw_log_debug("unloaded plugin:'%s'", plugin->filename);
-		if (!global_support.in_valgrind)
+		if (global_support.do_dlclose)
 			dlclose(plugin->hnd);
 		free(plugin->filename);
 		free(plugin);
@@ -290,7 +289,7 @@ static struct spa_handle *load_spa_handle(const char *lib,
 	handle->ref = 1;
 	handle->plugin = plugin;
 	handle->factory_name = strdup(factory_name);
-	spa_list_append(&plugin->handles, &handle->link);
+	spa_list_prepend(&sup->registry.handles, &handle->link);
 
 	return &handle->handle;
 
@@ -321,15 +320,13 @@ struct spa_handle *pw_load_spa_handle(const char *lib,
 static struct handle *find_handle(struct spa_handle *handle)
 {
 	struct registry *registry = &global_support.registry;
-	struct plugin *p;
 	struct handle *h;
 
-	spa_list_for_each(p, &registry->plugins, link) {
-		spa_list_for_each(h, &p->handles, link) {
-			if (&h->handle == handle)
-				return h;
-		}
+	spa_list_for_each(h, &registry->handles, link) {
+		if (&h->handle == handle)
+			return h;
 	}
+
 	return NULL;
 }
 
@@ -490,22 +487,30 @@ static struct spa_log *load_journal_logger(struct support *support,
 }
 #endif
 
-static enum spa_log_level
-parse_log_level(const char *str)
+static bool
+parse_log_level(const char *str, enum spa_log_level *l)
 {
-	enum spa_log_level l = SPA_LOG_LEVEL_NONE;
-	switch(str[0]) {
-		case 'X': l = SPA_LOG_LEVEL_NONE; break;
-		case 'E': l = SPA_LOG_LEVEL_ERROR; break;
-		case 'W': l = SPA_LOG_LEVEL_WARN; break;
-		case 'I': l = SPA_LOG_LEVEL_INFO; break;
-		case 'D': l = SPA_LOG_LEVEL_DEBUG; break;
-		case 'T': l = SPA_LOG_LEVEL_TRACE; break;
+	uint32_t lvl;
+	if (strlen(str) == 1) {
+		switch(str[0]) {
+		case 'X': lvl = SPA_LOG_LEVEL_NONE; break;
+		case 'E': lvl = SPA_LOG_LEVEL_ERROR; break;
+		case 'W': lvl = SPA_LOG_LEVEL_WARN; break;
+		case 'I': lvl = SPA_LOG_LEVEL_INFO; break;
+		case 'D': lvl = SPA_LOG_LEVEL_DEBUG; break;
+		case 'T': lvl = SPA_LOG_LEVEL_TRACE; break;
 		default:
-			  l = atoi(str);
-			  break;
+			  goto check_int;
+		}
+	} else {
+check_int:
+		  if (!spa_atou32(str, &lvl, 0))
+			  return false;
+		  if (lvl > SPA_LOG_LEVEL_TRACE)
+			  return false;
 	}
-	return l;
+	*l = lvl;
+	return true;
 }
 
 static char *
@@ -518,6 +523,7 @@ parse_pw_debug_env(void)
 	char json[1024] = {0};
 	char *pos = json;
 	char *end = pos + sizeof(json) - 1;
+	enum spa_log_level lvl;
 
 	str = getenv("PIPEWIRE_DEBUG");
 
@@ -530,13 +536,6 @@ parse_pw_debug_env(void)
 	 */
 	pos += spa_scnprintf(pos, end - pos, "[ { conn.* = %d },", SPA_LOG_LEVEL_NONE);
 
-	/* We only have single-digit log levels, so any single-character
-	 * string is of the form PIPEWIRE_DEBUG=<N> */
-	if (slen == 1) {
-		pw_log_set_level(parse_log_level(str));
-		goto out;
-	}
-
 	tokens = pw_split_strv(str, ",", INT_MAX, &n_tokens);
 	if (n_tokens > 0) {
 		int i;
@@ -544,24 +543,23 @@ parse_pw_debug_env(void)
 			int n_tok;
 			char **tok;
 			char *pattern;
-			enum spa_log_level lvl;
 
 			tok = pw_split_strv(tokens[i], ":", 2, &n_tok);
-			if (n_tok == 2) {
+			if (n_tok == 2 && parse_log_level(tok[1], &lvl)) {
 				pattern = tok[0];
-				lvl = parse_log_level(tok[1]);
-
 				pos += spa_scnprintf(pos, end - pos, "{ %s = %d },",
 						     pattern, lvl);
+			} else if (n_tok == 1 && parse_log_level(tok[0], &lvl)) {
+				pw_log_set_level(lvl);
 			} else {
-				pw_log_warn("Ignoring invalid format in PIPEWIRE_DEBUG: '%s'\n", tokens[i]);
+				pw_log_warn("Ignoring invalid format in PIPEWIRE_DEBUG: '%s'",
+						tokens[i]);
 			}
 
 			pw_free_strv(tok);
 		}
 	}
 	pw_free_strv(tokens);
-out:
 	pos += spa_scnprintf(pos, end - pos, "]");
 	return strdup(json);
 }
@@ -594,6 +592,10 @@ void pw_init(int *argc, char **argv[])
 	pthread_mutex_lock(&support_lock);
 	support->in_valgrind = RUNNING_ON_VALGRIND;
 
+	support->do_dlclose = true;
+	if ((str = getenv("PIPEWIRE_DLCLOSE")) != NULL)
+		support->do_dlclose = pw_properties_parse_bool(str);
+
 	if (getenv("NO_COLOR") != NULL)
 		support->no_color = true;
 
@@ -611,6 +613,7 @@ void pw_init(int *argc, char **argv[])
 	support->support_lib = str;
 
 	spa_list_init(&support->registry.plugins);
+	spa_list_init(&support->registry.handles);
 
 	if (pw_log_is_default()) {
 		char *patterns = NULL;
@@ -684,7 +687,7 @@ void pw_deinit(void)
 {
 	struct support *support = &global_support;
 	struct registry *registry = &support->registry;
-	struct plugin *p;
+	struct handle *h;
 
 	pthread_mutex_lock(&init_lock);
 	if (support->init_count == 0)
@@ -694,14 +697,10 @@ void pw_deinit(void)
 
 	pthread_mutex_lock(&support_lock);
 	pw_log_set(NULL);
-	spa_list_consume(p, &registry->plugins, link) {
-		struct handle *h;
-		p->ref++;
-		spa_list_consume(h, &p->handles, link)
-			unref_handle(h);
-		unref_plugin(p);
-	}
-	pw_free_strv(support->categories);
+
+	spa_list_consume(h, &registry->handles, link)
+		unref_handle(h);
+
 	free(support->i18n_domain);
 	spa_zero(global_support);
 	pthread_mutex_unlock(&support_lock);
@@ -721,16 +720,9 @@ done:
 SPA_EXPORT
 bool pw_debug_is_category_enabled(const char *name)
 {
-	int i;
-
-	if (global_support.categories == NULL)
-		return false;
-
-	for (i = 0; global_support.categories[i]; i++) {
-		if (spa_streq(global_support.categories[i], name))
-			return true;
-	}
-	return false;
+	struct spa_log_topic t = SPA_LOG_TOPIC(0, name);
+	PW_LOG_TOPIC_INIT(&t);
+	return t.has_custom_level;
 }
 
 /** Get the application name */
@@ -826,6 +818,8 @@ bool pw_check_option(const char *option, const char *value)
 		return global_support.no_color == spa_atob(value);
 	else if (spa_streq(option, "no-config"))
 		return global_support.no_config == spa_atob(value);
+	else if (spa_streq(option, "do-dlclose"))
+		return global_support.do_dlclose == spa_atob(value);
 	return false;
 }
 

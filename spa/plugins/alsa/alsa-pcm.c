@@ -1583,11 +1583,18 @@ int spa_alsa_set_format(struct state *state, struct spa_audio_info *fmt, uint32_
 	if (is_batch)
 		state->headroom += period_size;
 
+	if (spa_strstartswith(state->props.device, "a52") ||
+	    spa_strstartswith(state->props.device, "dca"))
+		state->min_delay = SPA_MIN(2048u, state->buffer_frames);
+	else
+		state->min_delay = 0;
+
 	state->headroom = SPA_MIN(state->headroom, state->buffer_frames);
 	state->start_delay = state->default_start_delay;
 
-	state->latency[state->port_direction].min_rate = state->headroom;
-	state->latency[state->port_direction].max_rate = state->headroom;
+	state->latency[state->port_direction].min_rate =
+		state->latency[state->port_direction].max_rate =
+			SPA_MAX(state->min_delay, state->headroom);
 
 	spa_log_info(state->log, "%s (%s): format:%s access:%s-%s rate:%d channels:%d "
 			"buffer frames %lu, period frames %lu, periods %u, frame_size %zd "
@@ -1859,7 +1866,7 @@ static int get_status(struct state *state, uint64_t current_time,
 		*delay = avail;
 		*target = SPA_MAX(*target, state->read_size);
 	}
-	*target = SPA_MIN(*target, state->buffer_frames);
+	*target = SPA_CLAMP(*target, state->min_delay, state->buffer_frames);
 	return 0;
 }
 
@@ -2428,9 +2435,20 @@ static void alsa_on_timeout_event(struct spa_source *source)
 	struct state *state = source->data;
 	snd_pcm_uframes_t delay, target;
 	uint64_t expire, current_time;
+	int res;
 
-	if (SPA_UNLIKELY(state->started && spa_system_timerfd_read(state->data_system, state->timerfd, &expire) < 0))
-		spa_log_warn(state->log, "%p: error reading timerfd: %m", state);
+	if (SPA_LIKELY(state->started)) {
+		if (SPA_UNLIKELY((res = spa_system_timerfd_read(state->data_system,
+						state->timerfd, &expire)) < 0)) {
+			/* we can get here when the timer is changed since the last
+			 * timerfd wakeup, for example by do_reassign_follower() executed
+			 * in the same epoll wakeup cycle */
+			if (res != -EAGAIN)
+				spa_log_warn(state->log, "%p: error reading timerfd: %s",
+						state, spa_strerror(res));
+			return;
+		}
+	}
 
 	check_position_config(state);
 
@@ -2610,6 +2628,8 @@ int spa_alsa_reassign_follower(struct state *state)
 		else
 			snd_pcm_pause(state->hndl, 0);
 	}
+
+	state->alsa_sync_warning = false;
 	return 0;
 }
 
