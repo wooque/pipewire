@@ -1,3 +1,18 @@
+pipewire (0.3.63-2) unstable; urgency=medium
+
+  * Enable ModemManager in native backend in bluez5 spa plugin
+      (Closes: #1027131)
+  * Add modemmanager-dev in Build-Deps
+  * Make wireplumber take precedence over pipewire-media-session.
+      pipewire-media-session is dead upstream with no release since
+      Oct 2021. But keep it as an alternative to wireplumber because
+      it still works and make easier the use of pipewire for screen sharing
+      only (i.e. without using pipewire for audio).
+  * Cherry-pick upstream recommended patch:
+      - c7b3ef0d: bluez5: backend-native: fix missing brace in CIND reply
+
+ -- Dylan Aïssi <daissi@debian.org>  Fri, 06 Jan 2023 21:38:55 +0100
+
 pipewire (0.3.63-1) unstable; urgency=medium
 
   * New upstream release
