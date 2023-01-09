@@ -119,6 +119,23 @@ Description: libraries for the PipeWire multimedia server - modules
  and should not normally be depended on directly. PipeWire clients should
  depend on the pipewire package instead.
 
+Package: libpipewire-0.3-modules-x11
+Architecture: linux-any
+Multi-Arch: same
+Depends: ${misc:Depends}, ${shlibs:Depends}
+Breaks: libpipewire-0.3-modules (<< 0.3.63-3~)
+Replaces: libpipewire-0.3-modules (<< 0.3.63-3~)
+Description: libraries for the PipeWire multimedia server - X11 modules
+ PipeWire is a server and user space API to deal with multimedia
+ pipelines. This includes:
+ .
+  - Making available sources of video (such as from a capture devices or
+    application provided streams) and multiplexing this with clients.
+  - Accessing sources of video for consumption.
+  - Generating graphs for audio and video processing.
+ .
+ This package contains X11 modules.
+
 Package: libspa-0.2-dev
 Section: libdevel
 Architecture: linux-any
