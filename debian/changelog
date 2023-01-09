@@ -6,6 +6,7 @@ pipewire (0.3.63-3) UNRELEASED; urgency=medium
   * pipewire-pulse: Demote pulseaudio-utils from Recommends to Suggests
       pactl is not used anymore to load by default modules. Modules can now
       be loaded using pulse.cmd.
+  * Standards-Version: 4.6.2 (no changes required)
 
  -- Dylan Aïssi <daissi@debian.org>  Mon, 09 Jan 2023 17:37:36 +0100
 
