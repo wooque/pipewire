@@ -1,0 +1,16 @@
+Description: Drop duplicated FULL_PATH_NAMES field
+ Keep the one set to NO, since including the full path
+ breaks reproducible builds.
+Author: Dylan Aïssi <daissi@debian.org>
+Forwarded: TODO
+
+--- a/doc/Doxyfile.in
++++ b/doc/Doxyfile.in
+@@ -7,7 +7,6 @@
+ OPTIMIZE_OUTPUT_FOR_C  = YES
+ EXTRACT_ALL            = YES
+ EXTRACT_STATIC         = YES
+-FULL_PATH_NAMES        = YES
+ STRIP_FROM_PATH        = @path_prefixes@
+ STRIP_FROM_INC_PATH    = @path_prefixes@
+ SHOW_FILES             = NO
