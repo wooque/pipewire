@@ -1,4 +1,4 @@
-pipewire (0.3.63-3) UNRELEASED; urgency=medium
+pipewire (0.3.63-3) experimental; urgency=medium
 
   * Patch doc/Doxyfile.in to make the build reproducible.
   * Move libpipewire-module-x11-bell.so into its own package
@@ -8,7 +8,7 @@ pipewire (0.3.63-3) UNRELEASED; urgency=medium
       be loaded using pulse.cmd.
   * Standards-Version: 4.6.2 (no changes required)
 
- -- Dylan Aïssi <daissi@debian.org>  Mon, 09 Jan 2023 17:37:36 +0100
+ -- Dylan Aïssi <daissi@debian.org>  Mon, 09 Jan 2023 18:10:15 +0100
 
 pipewire (0.3.63-2) unstable; urgency=medium
 
