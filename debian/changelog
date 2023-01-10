@@ -1,9 +1,13 @@
-pipewire (0.3.63-3.1) UNRELEASED; urgency=medium
+pipewire (0.3.63-4) unstable; urgency=medium
 
-  * Non-maintainer upload.
-  * Correctly manage pulse drain state, Closes: #1027762
+  [ Dylan Aïssi ]
+  * Upload to unstable
 
- -- Sam Hartman <hartmans@debian.org>  Tue, 10 Jan 2023 09:38:01 -0700
+  [ Sam Hartman ]
+  * Cherry-pick upstream patch:
+      - Correctly manage pulse drain state, Closes: #1027762
+
+ -- Dylan Aïssi <daissi@debian.org>  Tue, 10 Jan 2023 22:11:56 +0100
 
 pipewire (0.3.63-3) experimental; urgency=medium
 
