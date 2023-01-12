@@ -45,6 +45,7 @@ enum
 {
   PROP_ID = 1,
   PROP_SERIAL,
+  PROP_FD_DEVICE,
 };
 
 static GstElement *
@@ -52,15 +53,13 @@ gst_pipewire_device_create_element (GstDevice * device, const gchar * name)
 {
   GstPipeWireDevice *pipewire_dev = GST_PIPEWIRE_DEVICE (device);
   GstElement *elem;
-  gchar *id_str, *serial_str;
+  gchar *serial_str;
 
   elem = gst_element_factory_make (pipewire_dev->element, name);
 
-  /* XXX: eventually only add target-object here */
-  id_str = g_strdup_printf ("%u", pipewire_dev->id);
   serial_str = g_strdup_printf ("%"PRIu64, pipewire_dev->serial);
-  g_object_set (elem, "path", id_str, "target-object", serial_str, NULL);
-  g_free (id_str);
+  g_object_set (elem, "target-object", serial_str,
+                "fd", pipewire_dev->fd, NULL);
   g_free (serial_str);
 
   return elem;
@@ -70,7 +69,7 @@ static gboolean
 gst_pipewire_device_reconfigure_element (GstDevice * device, GstElement * element)
 {
   GstPipeWireDevice *pipewire_dev = GST_PIPEWIRE_DEVICE (device);
-  gchar *id_str, *serial_str;
+  gchar *serial_str;
 
   if (spa_streq(pipewire_dev->element, "pipewiresrc")) {
     if (!GST_IS_PIPEWIRE_SRC (element))
@@ -82,11 +81,9 @@ gst_pipewire_device_reconfigure_element (GstDevice * device, GstElement * elemen
     g_assert_not_reached ();
   }
 
-  /* XXX: eventually only add target-object here */
-  id_str = g_strdup_printf ("%u", pipewire_dev->id);
   serial_str = g_strdup_printf ("%"PRIu64, pipewire_dev->serial);
-  g_object_set (element, "path", id_str, "target-object", serial_str, NULL);
-  g_free (id_str);
+  g_object_set (element, "target-object", serial_str,
+                "fd", pipewire_dev->fd, NULL);
   g_free (serial_str);
 
   return TRUE;
@@ -108,6 +105,9 @@ gst_pipewire_device_get_property (GObject * object, guint prop_id,
     case PROP_SERIAL:
       g_value_set_uint64 (value, device->serial);
       break;
+    case PROP_FD_DEVICE:
+      g_value_set_int (value, device->fd);
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
       break;
@@ -128,6 +128,9 @@ gst_pipewire_device_set_property (GObject * object, guint prop_id,
       break;
     case PROP_SERIAL:
       device->serial = g_value_get_uint64 (value);
+      break;
+    case PROP_FD_DEVICE:
+      device->fd = g_value_get_int (value);
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
@@ -163,6 +166,11 @@ gst_pipewire_device_class_init (GstPipeWireDeviceClass * klass)
       g_param_spec_uint64 ("serial", "Serial",
           "The internal serial of the PipeWire device", 0, G_MAXUINT64, SPA_ID_INVALID,
           G_PARAM_STATIC_STRINGS | G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY));
+
+  g_object_class_install_property (object_class,
+      PROP_FD_DEVICE,
+      g_param_spec_int ("fd", "Fd", "The fd to connect with", -1, G_MAXINT, -1,
+          G_PARAM_STATIC_STRINGS | G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY));
 }
 
 static void
@@ -177,16 +185,8 @@ enum
 {
   PROP_0,
   PROP_CLIENT_NAME,
+  PROP_FD,
   PROP_LAST
-};
-
-struct core_data {
-  int seq;
-  GstPipeWireDeviceProvider *self;
-  struct spa_hook core_listener;
-  struct pw_registry *registry;
-  struct spa_hook registry_listener;
-  struct spa_list nodes;
 };
 
 struct node_data {
@@ -211,10 +211,10 @@ struct port_data {
   struct spa_hook port_listener;
 };
 
-static struct node_data *find_node_data(struct core_data *rd, uint32_t id)
+static struct node_data *find_node_data(struct spa_list *nodes, uint32_t id)
 {
   struct node_data *n;
-  spa_list_for_each(n, &rd->nodes, link) {
+  spa_list_for_each(n, nodes, link) {
     if (n->id == id)
       return n;
   }
@@ -257,7 +257,8 @@ new_node (GstPipeWireDeviceProvider *self, struct node_data *data)
 
   gstdev = g_object_new (GST_TYPE_PIPEWIRE_DEVICE,
       "display-name", name, "caps", data->caps, "device-class", klass,
-      "id", data->id, "serial", data->serial, "properties", props, NULL);
+      "id", data->id, "serial", data->serial, "fd", self->fd,
+      "properties", props, NULL);
 
   gstdev->id = data->id;
   gstdev->serial = data->serial;
@@ -269,12 +270,11 @@ new_node (GstPipeWireDeviceProvider *self, struct node_data *data)
   return GST_DEVICE (gstdev);
 }
 
-static void do_add_nodes(struct core_data *rd)
+static void do_add_nodes(GstPipeWireDeviceProvider *self)
 {
-  GstPipeWireDeviceProvider *self = rd->self;
   struct node_data *nd;
 
-  spa_list_for_each(nd, &rd->nodes, link) {
+  spa_list_for_each(nd, &self->nodes, link) {
     if (nd->dev != NULL)
 	    continue;
     pw_log_info("add node %d", nd->id);
@@ -290,22 +290,21 @@ static void do_add_nodes(struct core_data *rd)
 
 static void resync(GstPipeWireDeviceProvider *self)
 {
-  self->seq = pw_core_sync(self->core, PW_ID_CORE, self->seq);
+  self->seq = pw_core_sync(self->core->core, PW_ID_CORE, self->seq);
   pw_log_debug("resync %d", self->seq);
 }
 
 static void
 on_core_done (void *data, uint32_t id, int seq)
 {
-  struct core_data *rd = data;
-  GstPipeWireDeviceProvider *self = rd->self;
+  GstPipeWireDeviceProvider *self = data;
 
   pw_log_debug("check %d %d", seq, self->seq);
   if (id == PW_ID_CORE && seq == self->seq) {
-    do_add_nodes(rd);
+    do_add_nodes(self);
     self->end = true;
-    if (self->loop)
-      pw_thread_loop_signal (self->loop, FALSE);
+    if (self->core)
+      pw_thread_loop_signal (self->core->loop, FALSE);
   }
 }
 
@@ -313,8 +312,7 @@ on_core_done (void *data, uint32_t id, int seq)
 static void
 on_core_error(void *data, uint32_t id, int seq, int res, const char *message)
 {
-  struct core_data *rd = data;
-  GstPipeWireDeviceProvider *self = rd->self;
+  GstPipeWireDeviceProvider *self = data;
 
   pw_log_warn("error id:%u seq:%d res:%d (%s): %s",
           id, seq, res, spa_strerror(res), message);
@@ -322,7 +320,7 @@ on_core_error(void *data, uint32_t id, int seq, int res, const char *message)
   if (id == PW_ID_CORE) {
     self->error = res;
   }
-  pw_thread_loop_signal(self->loop, FALSE);
+  pw_thread_loop_signal(self->core->loop, FALSE);
 }
 
 static const struct pw_core_events core_events = {
@@ -470,8 +468,7 @@ static void registry_event_global(void *data, uint32_t id, uint32_t permissions,
                                 const char *type, uint32_t version,
                                 const struct spa_dict *props)
 {
-  struct core_data *rd = data;
-  GstPipeWireDeviceProvider *self = rd->self;
+  GstPipeWireDeviceProvider *self = data;
   GstDeviceProvider *provider = (GstDeviceProvider*)self;
   struct node_data *nd;
   const char *str;
@@ -479,7 +476,7 @@ static void registry_event_global(void *data, uint32_t id, uint32_t permissions,
   if (spa_streq(type, PW_TYPE_INTERFACE_Node)) {
     struct pw_node *node;
 
-    node = pw_registry_bind(rd->registry,
+    node = pw_registry_bind(self->registry,
                     id, type, PW_VERSION_NODE, sizeof(*nd));
     if (node == NULL)
       goto no_mem;
@@ -502,7 +499,7 @@ static void registry_event_global(void *data, uint32_t id, uint32_t permissions,
     nd->id = id;
     if (!props || !spa_atou64(spa_dict_lookup(props, PW_KEY_OBJECT_SERIAL), &nd->serial, 0))
       nd->serial = SPA_ID_INVALID;
-    spa_list_append(&rd->nodes, &nd->link);
+    spa_list_append(&self->nodes, &nd->link);
     pw_node_add_listener(node, &nd->node_listener, &node_events, nd);
     pw_proxy_add_listener((struct pw_proxy*)node, &nd->proxy_listener, &proxy_node_events, nd);
     resync(self);
@@ -514,10 +511,10 @@ static void registry_event_global(void *data, uint32_t id, uint32_t permissions,
     if ((str = spa_dict_lookup(props, PW_KEY_NODE_ID)) == NULL)
       return;
 
-    if ((nd = find_node_data(rd, atoi(str))) == NULL)
+    if ((nd = find_node_data(&self->nodes, atoi(str))) == NULL)
       return;
 
-    port = pw_registry_bind(rd->registry,
+    port = pw_registry_bind(self->registry,
                     id, type, PW_VERSION_PORT, sizeof(*pd));
     if (port == NULL)
       goto no_mem;
@@ -554,36 +551,29 @@ static GList *
 gst_pipewire_device_provider_probe (GstDeviceProvider * provider)
 {
   GstPipeWireDeviceProvider *self = GST_PIPEWIRE_DEVICE_PROVIDER (provider);
-  struct pw_loop *l = NULL;
-  struct pw_context *c = NULL;
-  struct core_data *data;
 
   GST_DEBUG_OBJECT (self, "starting probe");
 
-  if (!(l = pw_loop_new (NULL)))
-    return NULL;
-
-  if (!(c = pw_context_new (l, NULL, sizeof(*data))))
-    return NULL;
-
-  data = pw_context_get_user_data(c);
-  data->self = self;
-  spa_list_init(&data->nodes);
-
-  spa_list_init(&self->pending);
-  self->core = pw_context_connect (c, NULL, 0);
-  if (self->core == NULL)
+  self->core = gst_pipewire_core_get(self->fd);
+  if (self->core == NULL) {
+    GST_ERROR_OBJECT (self, "Failed to connect");
     goto failed;
+  }
 
   GST_DEBUG_OBJECT (self, "connected");
-  pw_core_add_listener(self->core, &data->core_listener, &core_events, data);
 
+  pw_thread_loop_lock (self->core->loop);
+
+  spa_list_init(&self->nodes);
+  spa_list_init(&self->pending);
   self->end = FALSE;
+  self->error = 0;
   self->list_only = TRUE;
   self->devices = NULL;
+  self->registry = pw_core_get_registry(self->core->core, PW_VERSION_REGISTRY, 0);
 
-  data->registry = pw_core_get_registry(self->core, PW_VERSION_REGISTRY, 0);
-  pw_registry_add_listener(data->registry, &data->registry_listener, &registry_events, data);
+  pw_core_add_listener(self->core->core, &self->core_listener, &core_events, self);
+  pw_registry_add_listener(self->registry, &self->registry_listener, &registry_events, self);
 
   resync(self);
 
@@ -592,20 +582,18 @@ gst_pipewire_device_provider_probe (GstDeviceProvider * provider)
       break;
     if (self->end)
       break;
-    pw_loop_iterate (l, -1);
+    pw_thread_loop_wait (self->core->loop);
   }
 
   GST_DEBUG_OBJECT (self, "disconnect");
-  pw_proxy_destroy ((struct pw_proxy*)data->registry);
-  pw_core_disconnect (self->core);
-  self->core = NULL;
-  pw_context_destroy (c);
-  pw_loop_destroy (l);
+
+  g_clear_pointer ((struct pw_proxy**)&self->registry, pw_proxy_destroy);
+  pw_thread_loop_unlock (self->core->loop);
+  g_clear_pointer (&self->core, gst_pipewire_core_release);
 
   return self->devices;
 
 failed:
-  pw_loop_destroy (l);
   return NULL;
 }
 
@@ -613,46 +601,28 @@ static gboolean
 gst_pipewire_device_provider_start (GstDeviceProvider * provider)
 {
   GstPipeWireDeviceProvider *self = GST_PIPEWIRE_DEVICE_PROVIDER (provider);
-  struct core_data *data;
 
   GST_DEBUG_OBJECT (self, "starting provider");
 
-  self->list_only = FALSE;
-  spa_list_init(&self->pending);
-
-  if (!(self->loop = pw_thread_loop_new ("pipewire-device-monitor", NULL))) {
-    GST_ERROR_OBJECT (self, "Could not create PipeWire mainloop");
-    goto failed_loop;
-  }
-
-  if (!(self->context = pw_context_new (pw_thread_loop_get_loop(self->loop), NULL, sizeof(*data)))) {
-    GST_ERROR_OBJECT (self, "Could not create PipeWire context");
-    goto failed_context;
-  }
-
-  if (pw_thread_loop_start (self->loop) < 0) {
-    GST_ERROR_OBJECT (self, "Could not start PipeWire mainloop");
-    goto failed_start;
-  }
-
-  pw_thread_loop_lock (self->loop);
-
-  if ((self->core = pw_context_connect (self->context, NULL, 0)) == NULL) {
+  self->core = gst_pipewire_core_get(self->fd);
+  if (self->core == NULL) {
     GST_ERROR_OBJECT (self, "Failed to connect");
-    goto failed_connect;
+    goto failed;
   }
 
   GST_DEBUG_OBJECT (self, "connected");
 
-  data = pw_context_get_user_data(self->context);
-  data->self = self;
-  spa_list_init(&data->nodes);
+  pw_thread_loop_lock (self->core->loop);
 
-  pw_core_add_listener(self->core, &data->core_listener, &core_events, data);
+  spa_list_init(&self->nodes);
+  spa_list_init(&self->pending);
+  self->end = FALSE;
+  self->error = 0;
+  self->list_only = FALSE;
+  self->registry = pw_core_get_registry(self->core->core, PW_VERSION_REGISTRY, 0);
 
-  self->registry = pw_core_get_registry(self->core, PW_VERSION_REGISTRY, 0);
-  data->registry = self->registry;
-  pw_registry_add_listener(self->registry, &data->registry_listener, &registry_events, data);
+  pw_core_add_listener(self->core->core, &self->core_listener, &core_events, self);
+  pw_registry_add_listener(self->registry, &self->registry_listener, &registry_events, self);
 
   resync(self);
 
@@ -661,24 +631,16 @@ gst_pipewire_device_provider_start (GstDeviceProvider * provider)
       break;
     if (self->end)
       break;
-    pw_thread_loop_wait (self->loop);
+    pw_thread_loop_wait (self->core->loop);
   }
 
   GST_DEBUG_OBJECT (self, "started");
 
-  pw_thread_loop_unlock (self->loop);
+  pw_thread_loop_unlock (self->core->loop);
 
   return TRUE;
 
-failed_connect:
-  pw_thread_loop_unlock (self->loop);
-failed_start:
-  pw_context_destroy (self->context);
-  self->context = NULL;
-failed_context:
-  pw_thread_loop_destroy (self->loop);
-  self->loop = NULL;
-failed_loop:
+failed:
   return TRUE;
 }
 
@@ -688,25 +650,9 @@ gst_pipewire_device_provider_stop (GstDeviceProvider * provider)
   GstPipeWireDeviceProvider *self = GST_PIPEWIRE_DEVICE_PROVIDER (provider);
 
   GST_DEBUG_OBJECT (self, "stopping provider");
-  if (self->loop)
-    pw_thread_loop_stop (self->loop);
 
-  if (self->registry) {
-    pw_proxy_destroy ((struct pw_proxy*)self->registry);
-    self->registry = NULL;
-  }
-  if (self->core) {
-    pw_core_disconnect (self->core);
-    self->core = NULL;
-  }
-  if (self->context) {
-    pw_context_destroy (self->context);
-    self->context = NULL;
-  }
-  if (self->loop) {
-    pw_thread_loop_destroy (self->loop);
-    self->loop = NULL;
-  }
+  g_clear_pointer ((struct pw_proxy**)&self->registry, pw_proxy_destroy);
+  g_clear_pointer (&self->core, gst_pipewire_core_release);
 }
 
 static void
@@ -726,6 +672,11 @@ gst_pipewire_device_provider_set_property (GObject * object,
       } else
         self->client_name = g_value_dup_string (value);
       break;
+
+    case PROP_FD:
+      self->fd = g_value_get_int (value);
+      break;
+
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
       break;
@@ -742,6 +693,11 @@ gst_pipewire_device_provider_get_property (GObject * object,
     case PROP_CLIENT_NAME:
       g_value_set_string (value, self->client_name);
       break;
+
+    case PROP_FD:
+      g_value_set_int (value, self->fd);
+      break;
+
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
       break;
@@ -779,6 +735,11 @@ gst_pipewire_device_provider_class_init (GstPipeWireDeviceProviderClass * klass)
           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS |
           GST_PARAM_MUTABLE_READY));
 
+  g_object_class_install_property (gobject_class,
+      PROP_FD,
+      g_param_spec_int ("fd", "Fd", "The fd to connect with", -1, G_MAXINT, -1,
+          G_PARAM_STATIC_STRINGS | G_PARAM_READWRITE));
+
   gst_device_provider_class_set_static_metadata (dm_class,
       "PipeWire Device Provider", "Sink/Source/Audio/Video",
       "List and provide PipeWire source and sink devices",
@@ -789,4 +750,5 @@ static void
 gst_pipewire_device_provider_init (GstPipeWireDeviceProvider * self)
 {
   self->client_name = g_strdup(pw_get_client_name ());
+  self->fd = -1;
 }

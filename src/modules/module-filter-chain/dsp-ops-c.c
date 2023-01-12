@@ -29,9 +29,10 @@
 
 #include <spa/utils/defs.h>
 
+#include "pffft.h"
 #include "dsp-ops.h"
 
-static inline void dsp_clear_c(struct dsp_ops *ops, void * SPA_RESTRICT dst, uint32_t n_samples)
+void dsp_clear_c(struct dsp_ops *ops, void * SPA_RESTRICT dst, uint32_t n_samples)
 {
 	memset(dst, 0, sizeof(float) * n_samples);
 }
@@ -131,5 +132,43 @@ void dsp_biquad_run_c(struct dsp_ops *ops, struct biquad *bq,
 	bq->y1 = F(y1);
 	bq->y2 = F(y2);
 #undef F
+}
+
+void dsp_sum_c(struct dsp_ops *ops, float * dst,
+		const float * SPA_RESTRICT a, const float * SPA_RESTRICT b, uint32_t n_samples)
+{
+	uint32_t i;
+	for (i = 0; i < n_samples; i++)
+		dst[i] = a[i] + b[i];
+}
+
+void *dsp_fft_new_c(struct dsp_ops *ops, int32_t size, bool real)
+{
+	return pffft_new_setup(size, real ? PFFFT_REAL : PFFFT_COMPLEX);
+}
+
+void dsp_fft_free_c(struct dsp_ops *ops, void *fft)
+{
+	pffft_destroy_setup(fft);
+}
+void dsp_fft_run_c(struct dsp_ops *ops, void *fft, int direction,
+	const float * SPA_RESTRICT src, float * SPA_RESTRICT dst)
+{
+	pffft_transform(fft, src, dst, NULL, direction < 0 ? PFFFT_BACKWARD : PFFFT_FORWARD);
+}
+
+void dsp_fft_cmul_c(struct dsp_ops *ops, void *fft,
+	float * SPA_RESTRICT dst, const float * SPA_RESTRICT a,
+	const float * SPA_RESTRICT b, uint32_t len, const float scale)
+{
+	pffft_zconvolve(fft, a, b, dst, scale);
+}
+
+void dsp_fft_cmuladd_c(struct dsp_ops *ops, void *fft,
+	float * SPA_RESTRICT dst, const float * SPA_RESTRICT src,
+	const float * SPA_RESTRICT a, const float * SPA_RESTRICT b,
+	uint32_t len, const float scale)
+{
+	pffft_zconvolve_accumulate(fft, a, b, src, dst, scale);
 }
 

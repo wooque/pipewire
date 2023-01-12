@@ -1453,10 +1453,12 @@ impl_node_port_use_buffers(void *object,
 
 	spa_log_debug(this->log, "use buffers %d", n_buffers);
 
-	if (!port->have_format)
-		return -EIO;
-
 	clear_buffers(this, port);
+
+	if (n_buffers > 0 && !port->have_format)
+		return -EIO;
+	if (n_buffers > MAX_BUFFERS)
+		return -ENOSPC;
 
 	for (i = 0; i < n_buffers; i++) {
 		struct buffer *b = &port->buffers[i];
@@ -1754,7 +1756,6 @@ impl_init(const struct spa_handle_factory *factory,
 	port->latency = SPA_LATENCY_INFO(SPA_DIRECTION_INPUT);
 	port->latency.min_quantum = 1.0f;
 	port->latency.max_quantum = 1.0f;
-	set_latency(this, false);
 
 	spa_list_init(&port->ready);
 
@@ -1799,6 +1800,8 @@ impl_init(const struct spa_handle_factory *factory,
 		this->is_output = true;
 
 	reset_props(this, &this->props);
+
+	set_latency(this, false);
 
 	spa_bt_transport_add_listener(this->transport,
 			&this->transport_listener, &transport_events, this);

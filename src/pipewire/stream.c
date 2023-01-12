@@ -39,6 +39,8 @@
 #include <spa/debug/types.h>
 #include <spa/debug/pod.h>
 
+#define PW_ENABLE_DEPRECATED
+
 #include "pipewire/pipewire.h"
 #include "pipewire/stream.h"
 #include "pipewire/private.h"
@@ -922,12 +924,12 @@ static int impl_port_use_buffers(void *object,
 	if (impl->disconnecting && n_buffers > 0)
 		return -EIO;
 
-	if (n_buffers > MAX_BUFFERS)
-		return -EINVAL;
-
 	prot = PROT_READ | (direction == SPA_DIRECTION_OUTPUT ? PROT_WRITE : 0);
 
 	clear_buffers(stream);
+
+	if (n_buffers > MAX_BUFFERS)
+		return -ENOSPC;
 
 	for (i = 0; i < n_buffers; i++) {
 		int buf_size = 0;
@@ -1890,9 +1892,10 @@ pw_stream_connect(struct pw_stream *stream,
 	stream_set_state(stream, PW_STREAM_STATE_CONNECTING, NULL);
 
 	if (target_id != PW_ID_ANY)
+		/* XXX this is deprecated but still used by the portal and its apps */
 		pw_properties_setf(stream->properties, PW_KEY_NODE_TARGET, "%d", target_id);
 	else if ((str = getenv("PIPEWIRE_NODE")) != NULL)
-		pw_properties_set(stream->properties, PW_KEY_NODE_TARGET, str);
+		pw_properties_set(stream->properties, PW_KEY_TARGET_OBJECT, str);
 	if ((flags & PW_STREAM_FLAG_AUTOCONNECT) &&
 	    pw_properties_get(stream->properties, PW_KEY_NODE_AUTOCONNECT) == NULL) {
 		str = getenv("PIPEWIRE_AUTOCONNECT");

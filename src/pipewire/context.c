@@ -917,7 +917,7 @@ static inline void get_quantums(struct pw_context *context, uint32_t *def,
 	*limit = s->clock_quantum_limit;
 }
 
-static inline uint32_t *get_rates(struct pw_context *context, uint32_t *def, uint32_t *n_rates,
+static inline const uint32_t *get_rates(struct pw_context *context, uint32_t *def, uint32_t *n_rates,
 		bool *force)
 {
 	struct settings *s = &context->settings;
@@ -933,7 +933,7 @@ static inline uint32_t *get_rates(struct pw_context *context, uint32_t *def, uin
 		return s->clock_rates;
 	}
 }
-static void suspend_driver(struct pw_context *context, struct pw_impl_node *n)
+static void reconfigure_driver(struct pw_context *context, struct pw_impl_node *n)
 {
 	struct pw_impl_node *s;
 
@@ -946,6 +946,9 @@ static void suspend_driver(struct pw_context *context, struct pw_impl_node *n)
 	}
 	pw_log_debug("%p: driver %p: '%s' suspend",
 			context, n, n->name);
+
+	if (n->info.state >= PW_NODE_STATE_IDLE)
+		n->reconfigure = true;
 	pw_impl_node_set_state(n, PW_NODE_STATE_SUSPENDED);
 }
 
@@ -968,7 +971,7 @@ static int fraction_compare(const struct spa_fraction *a, const struct spa_fract
 	return fa < fb ? -1 : (fa > fb ? 1 : 0);
 }
 
-static uint32_t find_best_rate(uint32_t *rates, uint32_t n_rates, uint32_t rate, uint32_t best)
+static uint32_t find_best_rate(const uint32_t *rates, uint32_t n_rates, uint32_t rate, uint32_t best)
 {
 	uint32_t i;
 	for (i = 0; i < n_rates; i++) {
@@ -1002,9 +1005,10 @@ int pw_context_recalc_graph(struct pw_context *context, const char *reason)
 	struct impl *impl = SPA_CONTAINER_OF(context, struct impl, this);
 	struct settings *settings = &context->settings;
 	struct pw_impl_node *n, *s, *target, *fallback;
+	const uint32_t *rates;
 	uint32_t max_quantum, min_quantum, def_quantum, lim_quantum, rate_quantum;
-	uint32_t *rates, n_rates, def_rate;
-	bool freewheel = false, global_force_rate, force_rate, force_quantum, global_force_quantum;
+	uint32_t n_rates, def_rate;
+	bool freewheel = false, global_force_rate, global_force_quantum;
 	struct spa_list collect;
 
 	pw_log_info("%p: busy:%d reason:%s", context, impl->recalc, reason);
@@ -1020,8 +1024,7 @@ again:
 	get_quantums(context, &def_quantum, &min_quantum, &max_quantum, &lim_quantum, &rate_quantum);
 	rates = get_rates(context, &def_rate, &n_rates, &global_force_rate);
 
-	force_quantum = global_force_quantum = rate_quantum == 0;
-	force_rate = global_force_rate;
+	global_force_quantum = rate_quantum == 0;
 
 	/* start from all drivers and group all nodes that are linked
 	 * to it. Some nodes are not (yet) linked to anything and they
@@ -1118,9 +1121,24 @@ again:
 		struct spa_fraction rate = SPA_FRACTION(0, 0);
 		uint32_t quantum, target_rate, current_rate;
 		uint64_t quantum_stamp = 0, rate_stamp = 0;
+		bool force_rate, force_quantum;
+		const uint32_t *node_rates;
+		uint32_t node_n_rates, node_def_rate;
+		uint32_t node_max_quantum, node_min_quantum, node_def_quantum, node_rate_quantum;
 
 		if (!n->driving || n->exported)
 			continue;
+
+		node_def_quantum = def_quantum;
+		node_min_quantum = min_quantum;
+		node_max_quantum = max_quantum;
+		node_rate_quantum = rate_quantum;
+		force_quantum = global_force_quantum;
+
+		node_def_rate = def_rate;
+		node_n_rates = n_rates;
+		node_rates = rates;
+		force_rate = global_force_rate;
 
 		/* collect quantum and rate */
 		spa_list_for_each(s, &n->follower_list, follower_link) {
@@ -1135,17 +1153,17 @@ again:
 			}
 			if (!global_force_quantum && s->force_quantum > 0 &&
 			    s->stamp > quantum_stamp) {
-				def_quantum = min_quantum = max_quantum = s->force_quantum;
-				rate_quantum = 0;
+				node_def_quantum = node_min_quantum = node_max_quantum = s->force_quantum;
+				node_rate_quantum = 0;
 				quantum_stamp = s->stamp;
 				force_quantum = true;
 			}
 			if (!global_force_rate && s->force_rate > 0 &&
 			    s->stamp > rate_stamp) {
-				def_rate = s->force_rate;
+				node_def_rate = s->force_rate;
+				node_n_rates = 1;
+				node_rates = &s->force_rate;
 				force_rate = true;
-				n_rates = 1;
-				rates = &s->force_rate;
 				rate_stamp = s->stamp;
 			}
 
@@ -1180,8 +1198,11 @@ again:
 		if (force_rate)
 			lock_rate = false;
 
+		if (n->reconfigure)
+			running = true;
+
 		current_rate = n->current_rate.denom;
-		if (lock_rate ||
+		if (lock_rate || n->reconfigure ||
 		    (!force_rate &&
 		    (n->info.state > PW_NODE_STATE_IDLE)))
 			/* when someone wants us to lock the rate of this driver or
@@ -1192,14 +1213,14 @@ again:
 			/* Here we are allowed to change the rate of the driver.
 			 * Start with the default rate. If the desired rate is
 			 * allowed, switch to it */
-			target_rate = def_rate;
+			target_rate = node_def_rate;
 			if (rate.denom != 0 && rate.num == 1)
-				target_rate = find_best_rate(rates, n_rates,
+				target_rate = find_best_rate(node_rates, node_n_rates,
 						rate.denom, target_rate);
 		}
 
 		if (target_rate != current_rate) {
-			bool do_suspend = false;
+			bool do_reconfigure = false;
 			/* we doing a rate switch */
 			pw_log_info("(%s-%u) state:%s new rate:%u->%u",
 					n->name, n->info.id,
@@ -1209,41 +1230,42 @@ again:
 
 			if (force_rate) {
 				if (settings->clock_rate_update_mode == CLOCK_RATE_UPDATE_MODE_HARD)
-					do_suspend = true;
+					do_reconfigure = true;
 			} else {
 				if (n->info.state >= PW_NODE_STATE_SUSPENDED)
-					do_suspend = true;
+					do_reconfigure = true;
 			}
-			if (do_suspend)
-				suspend_driver(context, n);
+			if (do_reconfigure)
+				reconfigure_driver(context, n);
+
 			/* we're setting the pending rate. This will become the new
 			 * current rate in the next iteration of the graph. */
 			n->current_rate = SPA_FRACTION(1, target_rate);
 			n->current_pending = true;
 			current_rate = target_rate;
 			/* we might be suspended now and the links need to be prepared again */
-			if (do_suspend)
+			if (do_reconfigure)
 				goto again;
 		}
 
-		if (rate_quantum != 0 && current_rate != rate_quantum) {
+		if (node_rate_quantum != 0 && current_rate != node_rate_quantum) {
 			/* the quantum values are scaled with the current rate */
-			def_quantum = def_quantum * current_rate / rate_quantum;
-			min_quantum = min_quantum * current_rate / rate_quantum;
-			max_quantum = max_quantum * current_rate / rate_quantum;
+			node_def_quantum = node_def_quantum * current_rate / node_rate_quantum;
+			node_min_quantum = node_min_quantum * current_rate / node_rate_quantum;
+			node_max_quantum = node_max_quantum * current_rate / node_rate_quantum;
 		}
 
 		/* calculate desired quantum */
 		if (max_latency.denom != 0) {
 			uint32_t tmp = (max_latency.num * current_rate / max_latency.denom);
-			if (tmp < max_quantum)
-				max_quantum = tmp;
+			if (tmp < node_max_quantum)
+				node_max_quantum = tmp;
 		}
 
-		quantum = def_quantum;
+		quantum = node_def_quantum;
 		if (latency.denom != 0)
 			quantum = (latency.num * current_rate / latency.denom);
-		quantum = SPA_CLAMP(quantum, min_quantum, max_quantum);
+		quantum = SPA_CLAMP(quantum, node_min_quantum, node_max_quantum);
 		quantum = SPA_MIN(quantum, lim_quantum);
 
 		if (settings->clock_power_of_two_quantum)
@@ -1261,7 +1283,7 @@ again:
 
 		if (n->info.state < PW_NODE_STATE_RUNNING && n->current_pending) {
 			/* the driver node is not actually running and we have a
-			 * panding change. Apply the change to the position now so
+			 * pending change. Apply the change to the position now so
 			 * that we have the right values when we change the node
 			 * states of the driver and followers to RUNNING below */
 			pw_log_debug("%p: apply duration:%"PRIu64" rate:%u/%u", context,
