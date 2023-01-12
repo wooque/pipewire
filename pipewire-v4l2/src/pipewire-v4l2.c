@@ -28,6 +28,7 @@
 #include <fcntl.h>
 #include <dlfcn.h>
 #include <stdarg.h>
+#include <stdlib.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -671,7 +672,7 @@ static void registry_event_global(void *data, uint32_t id,
 	const struct global_info *info = NULL;
 	struct pw_proxy *proxy;
 	const char *str;
-	uint32_t serial = SPA_ID_INVALID, dev;
+	uint32_t serial = SPA_ID_INVALID, dev, req_serial;
 
 	if (spa_streq(type, PW_TYPE_INTERFACE_Node)) {
 
@@ -689,6 +690,11 @@ static void registry_event_global(void *data, uint32_t id,
 
 		if (((str = spa_dict_lookup(props, PW_KEY_OBJECT_SERIAL)) == NULL) ||
 		    !spa_atou32(str, &serial, 10))
+			return;
+
+		if ((str = getenv("PIPEWIRE_V4L2_TARGET")) != NULL
+				&& spa_atou32(str, &req_serial, 10)
+				&& req_serial != serial)
 			return;
 
 		dev = find_dev_for_serial(serial);
@@ -792,11 +798,20 @@ static int v4l2_openat(int dirfd, const char *path, int oflag, mode_t mode)
 	struct file *file;
 	bool passthrough = true;
 	uint32_t dev_id = SPA_ID_INVALID;
+	char *real_path;
 
-	if (spa_strstartswith(path, "/dev/video")) {
-		if (spa_atou32(path+10, &dev_id, 10) && dev_id < MAX_DEV)
+	real_path = realpath(path, NULL);
+	if (!real_path)
+		real_path = (char *)path;
+
+	if (spa_strstartswith(real_path, "/dev/video")) {
+		if (spa_atou32(real_path+10, &dev_id, 10) && dev_id < MAX_DEV)
 			passthrough = false;
 	}
+
+	if (real_path && real_path != path)
+		free(real_path);
+
 	if (passthrough)
 		return globals.old_fops.openat(dirfd, path, oflag, mode);
 
@@ -887,7 +902,9 @@ error:
 
 	pw_log_info("path:%s oflag:%d mode:%d -> %d (%s)", path, oflag, mode,
 			-1, spa_strerror(res));
+
 	errno = -res;
+
 	return -1;
 }
 
@@ -1733,6 +1750,76 @@ static int vidioc_try_fmt(struct file *file, struct v4l2_format *arg)
 	return res;
 }
 
+static int vidioc_g_parm(struct file *file, struct v4l2_streamparm *arg)
+{
+	if (arg->type != V4L2_BUF_TYPE_VIDEO_CAPTURE)
+		return -EINVAL;
+
+	struct param *p;
+
+	pw_thread_loop_lock(file->loop);
+	bool found = false;
+	struct spa_video_info info;
+	int num = 0, denom = 0;
+
+	spa_list_for_each(p, &file->node->param_list, link) {
+		if (p->id != SPA_PARAM_EnumFormat || p->param == NULL)
+			continue;
+
+		if (param_to_info(p->param, &info) < 0)
+			continue;
+
+		switch (info.media_subtype) {
+			case SPA_MEDIA_SUBTYPE_raw:
+				num = info.info.raw.framerate.num;
+				denom = info.info.raw.framerate.denom;
+				break;
+			case SPA_MEDIA_SUBTYPE_mjpg:
+				num = info.info.mjpg.framerate.num;
+				denom = info.info.mjpg.framerate.denom;
+				break;
+			case SPA_MEDIA_SUBTYPE_h264:
+				num = info.info.h264.framerate.num;
+				denom = info.info.h264.framerate.denom;
+				break;
+		}
+
+		if (num == 0 || denom == 0)
+		  continue;
+
+		found = true;
+		break;
+	}
+
+	if (!found) {
+		pw_thread_loop_unlock(file->loop);
+		return -EINVAL;
+	}
+
+	pw_thread_loop_unlock(file->loop);
+
+	spa_zero(*arg);
+	arg->type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+	arg->parm.capture.capability = V4L2_CAP_TIMEPERFRAME;
+	arg->parm.capture.capturemode = 0;
+	arg->parm.capture.extendedmode = 0;
+	arg->parm.capture.readbuffers = 0;
+	arg->parm.capture.timeperframe.numerator = denom;
+	arg->parm.capture.timeperframe.denominator = num;
+
+	pw_log_info("VIDIOC_G_PARM frametime: %d/%d", num, denom);
+
+	return 0;
+}
+
+// TODO: implement setting parameters
+static int vidioc_s_parm(struct file *file, struct v4l2_streamparm *arg)
+{
+	pw_log_warn("VIDIOC_S_PARM is unimplemented, returning current value");
+	vidioc_g_parm(file, arg);
+	return 0;
+}
+
 static int vidioc_enuminput(struct file *file, struct v4l2_input *arg)
 {
 	uint32_t index = arg->index;
@@ -2014,6 +2101,261 @@ exit_unlock:
 	return res;
 }
 
+// Copied from spa/plugins/v4l2/v4l2-utils.c
+// TODO: unify with source
+static struct {
+	uint32_t v4l2_id;
+	uint32_t spa_id;
+} control_map[] = {
+	{ V4L2_CID_BRIGHTNESS, SPA_PROP_brightness },
+	{ V4L2_CID_CONTRAST, SPA_PROP_contrast },
+	{ V4L2_CID_SATURATION, SPA_PROP_saturation },
+	{ V4L2_CID_HUE, SPA_PROP_hue },
+	{ V4L2_CID_GAMMA, SPA_PROP_gamma },
+	{ V4L2_CID_EXPOSURE, SPA_PROP_exposure },
+	{ V4L2_CID_GAIN, SPA_PROP_gain },
+	{ V4L2_CID_SHARPNESS, SPA_PROP_sharpness },
+};
+
+static uint32_t prop_id_to_control(uint32_t prop_id)
+{
+	SPA_FOR_EACH_ELEMENT_VAR(control_map, c) {
+		if (c->spa_id == prop_id)
+			return c->v4l2_id;
+	}
+	if (prop_id >= SPA_PROP_START_CUSTOM)
+		return prop_id - SPA_PROP_START_CUSTOM;
+	return SPA_ID_INVALID;
+}
+
+static int vidioc_queryctrl(struct file *file, struct v4l2_queryctrl *arg)
+{
+	struct param *p;
+	bool found = false, next = false;
+
+	memset(arg->reserved, 0, sizeof(arg->reserved));
+
+	// TODO: V4L2_CTRL_FLAG_NEXT_COMPOUND
+	if (arg->id & V4L2_CTRL_FLAG_NEXT_CTRL) {
+		pw_log_debug("VIDIOC_QUERYCTRL: 0x%08" PRIx32 " | V4L2_CTRL_FLAG_NEXT_CTRL", arg->id);
+		arg->id = arg->id & ~V4L2_CTRL_FLAG_NEXT_CTRL & ~V4L2_CTRL_FLAG_NEXT_COMPOUND;
+		next = true;
+	}
+	pw_log_debug("VIDIOC_QUERYCTRL: 0x%08" PRIx32, arg->id);
+
+
+	if (file->node == NULL)
+		return -EIO;
+
+	pw_thread_loop_lock(file->loop);
+
+	// FIXME: place found item into a variable. Will fix unordered ctrls
+	spa_list_for_each(p, &file->node->param_list, link) {
+		uint32_t prop_id, ctrl_id, n_vals, choice = SPA_ID_INVALID;
+		const char *prop_description;
+		const struct spa_pod *type, *pod;
+
+		if (p->id != SPA_PARAM_PropInfo || p->param == NULL)
+			continue;
+
+		if (spa_pod_parse_object(p->param,
+			SPA_TYPE_OBJECT_PropInfo, NULL,
+			SPA_PROP_INFO_id,		SPA_POD_Id(&prop_id),
+			SPA_PROP_INFO_description,	SPA_POD_String(&prop_description)) < 0)
+			continue;
+
+		if ((ctrl_id = prop_id_to_control(prop_id)) == SPA_ID_INVALID)
+			continue;
+
+		if ((next && ctrl_id > arg->id) || (!next && ctrl_id == arg->id)) {
+			if (spa_pod_parse_object(p->param,
+				SPA_TYPE_OBJECT_PropInfo, NULL,
+				SPA_PROP_INFO_type, SPA_POD_PodChoice(&type)) < 0)
+				continue;
+
+			// TODO: support setting controls
+			arg->flags = V4L2_CTRL_FLAG_READ_ONLY;
+			spa_scnprintf((char*)arg->name, sizeof(arg->name), "%s", prop_description);
+
+			// check type and populate range
+			pod = spa_pod_get_values(type, &n_vals, &choice);
+			if (spa_pod_is_int(pod)) {
+				if (n_vals < 4)
+					break;
+				arg->type = V4L2_CTRL_TYPE_INTEGER;
+				int *v = SPA_POD_BODY(pod);
+				arg->default_value = v[0];
+				arg->minimum = v[1];
+				arg->maximum = v[2];
+				arg->step = v[3];
+			}
+			else if (spa_pod_is_bool(pod) && n_vals > 0) {
+				arg->type = V4L2_CTRL_TYPE_BOOLEAN;
+				arg->default_value = SPA_POD_VALUE(struct spa_pod_bool, pod);
+				arg->minimum = 0;
+				arg->maximum = 1;
+				arg->step = 1;
+			}
+			else {
+				break;
+			}
+
+			arg->id = ctrl_id;
+			found = true;
+			pw_log_debug("ctrl 0x%08" PRIx32 " ok", arg->id);
+			break;
+		}
+	}
+
+	pw_thread_loop_unlock(file->loop);
+
+	if (!found) {
+		pw_log_info("not found ctrl 0x%08" PRIx32, arg->id);
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+static int vidioc_g_ctrl(struct file *file, struct v4l2_control *arg)
+{
+	struct param *p;
+	bool found = false;
+
+	pw_log_debug("VIDIOC_G_CTRL: 0x%08" PRIx32, arg->id);
+
+	if (file->node == NULL)
+		return -EIO;
+
+	pw_thread_loop_lock(file->loop);
+
+	spa_list_for_each(p, &file->node->param_list, link) {
+		uint32_t prop_id, ctrl_id, n_vals, choice = SPA_ID_INVALID;
+		const char *prop_description;
+		const struct spa_pod *type, *pod;
+
+		if (p->id != SPA_PARAM_PropInfo || p->param == NULL)
+			continue;
+
+		if (spa_pod_parse_object(p->param,
+			SPA_TYPE_OBJECT_PropInfo, NULL,
+			SPA_PROP_INFO_id,		SPA_POD_Id(&prop_id),
+			SPA_PROP_INFO_description,	SPA_POD_String(&prop_description)) < 0)
+			continue;
+
+		if ((ctrl_id = prop_id_to_control(prop_id)) == SPA_ID_INVALID)
+			continue;
+
+		if (spa_pod_parse_object(p->param,
+			SPA_TYPE_OBJECT_PropInfo, NULL,
+			SPA_PROP_INFO_type, SPA_POD_PodChoice(&type)) < 0)
+			continue;
+
+		if (ctrl_id == arg->id) {
+			// TODO: support getting true ctrl values instead of defaults
+			pod = spa_pod_get_values(type, &n_vals, &choice);
+			if (spa_pod_is_int(pod)) {
+				if (n_vals < 4)
+					break;
+				int *v = SPA_POD_BODY(pod);
+				arg->value = v[0];
+			}
+			else if (spa_pod_is_bool(pod) && n_vals > 0) {
+				arg->value = SPA_POD_VALUE(struct spa_pod_bool, pod);
+			}
+			else {
+				break;
+			}
+
+			found = true;
+			pw_log_debug("ctrl 0x%08" PRIx32 " ok", arg->id);
+			break;
+		}
+	}
+
+	pw_thread_loop_unlock(file->loop);
+
+	if (!found) {
+		pw_log_info("not found ctrl 0x%08" PRIx32, arg->id);
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+static int vidioc_s_ctrl(struct file *file, struct v4l2_control *arg)
+{
+	struct param *p;
+	bool found = false;
+
+	pw_log_info("VIDIOC_S_CTRL: 0x%08" PRIx32 " 0x%08" PRIx32, arg->id, arg->value);
+
+	if (file->node == NULL)
+		return -EIO;
+
+	pw_thread_loop_lock(file->loop);
+
+	spa_list_for_each(p, &file->node->param_list, link) {
+		uint32_t prop_id, ctrl_id, n_vals, choice = SPA_ID_INVALID;
+		const char *prop_description;
+		const struct spa_pod *type, *pod;
+
+		if (p->id != SPA_PARAM_PropInfo || p->param == NULL)
+			continue;
+
+		if (spa_pod_parse_object(p->param,
+			SPA_TYPE_OBJECT_PropInfo, NULL,
+			SPA_PROP_INFO_id,		SPA_POD_Id(&prop_id),
+			SPA_PROP_INFO_description,	SPA_POD_String(&prop_description)) < 0)
+			continue;
+
+		if ((ctrl_id = prop_id_to_control(prop_id)) == SPA_ID_INVALID)
+			continue;
+
+		if (spa_pod_parse_object(p->param,
+			SPA_TYPE_OBJECT_PropInfo, NULL,
+			SPA_PROP_INFO_type, SPA_POD_PodChoice(&type)) < 0)
+			continue;
+
+		if (ctrl_id == arg->id) {
+			char buf[1024];
+			struct spa_pod_builder b = SPA_POD_BUILDER_INIT(buf, sizeof(buf));
+			struct spa_pod_frame f[1];
+			struct spa_pod *param;
+			pod = spa_pod_get_values(type, &n_vals, &choice);
+
+			spa_pod_builder_push_object(&b, &f[0],
+					SPA_TYPE_OBJECT_Props,  SPA_PARAM_Props);
+
+			if (spa_pod_is_int(pod)) {
+				spa_pod_builder_add(&b, prop_id, SPA_POD_Int(arg->value), 0);
+			} else if (spa_pod_is_bool(pod)) {
+				spa_pod_builder_add(&b, prop_id, SPA_POD_Bool(arg->value), 0);
+			} else {
+				// TODO: float and other formats
+				pw_log_info("unknown type");
+				break;
+			}
+
+			param = spa_pod_builder_pop(&b, &f[0]);
+			pw_node_set_param(file->node->proxy, SPA_PARAM_Props, 0, param);
+
+			found = true;
+			pw_log_info("ctrl 0x%08" PRIx32 " set ok", arg->id);
+			break;
+		}
+	}
+
+	pw_thread_loop_unlock(file->loop);
+
+	if (!found) {
+		pw_log_info("not found ctrl 0x%08" PRIx32, arg->id);
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
 static int v4l2_ioctl(int fd, unsigned long int request, void *arg)
 {
 	int res;
@@ -2054,6 +2396,12 @@ static int v4l2_ioctl(int fd, unsigned long int request, void *arg)
 	case VIDIOC_TRY_FMT:
 		res = vidioc_try_fmt(file, (struct v4l2_format *)arg);
 		break;
+	case VIDIOC_G_PARM:
+		res = vidioc_g_parm(file, (struct v4l2_streamparm *)arg);
+		break;
+	case VIDIOC_S_PARM:
+		res = vidioc_s_parm(file, (struct v4l2_streamparm *)arg);
+		break;
 	case VIDIOC_ENUMINPUT:
 		res = vidioc_enuminput(file, (struct v4l2_input *)arg);
 		break;
@@ -2086,6 +2434,16 @@ static int v4l2_ioctl(int fd, unsigned long int request, void *arg)
 		break;
 	case VIDIOC_STREAMOFF:
 		res = vidioc_streamoff(file, (int *)arg);
+		break;
+	// TODO: VIDIOC_QUERY_EXT_CTRL
+	case VIDIOC_QUERYCTRL:
+		res = vidioc_queryctrl(file, (struct v4l2_queryctrl *)arg);
+		break;
+	case VIDIOC_G_CTRL:
+		res = vidioc_g_ctrl(file, (struct v4l2_control *)arg);
+		break;
+	case VIDIOC_S_CTRL:
+		res = vidioc_s_ctrl(file, (struct v4l2_control *)arg);
 		break;
 	default:
 		res = -ENOTTY;

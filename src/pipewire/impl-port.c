@@ -1473,6 +1473,12 @@ int pw_impl_port_set_param(struct pw_impl_port *port, uint32_t id, uint32_t flag
 			port->added = false;
 		}
 		/* setting the format always destroys the negotiated buffers */
+		if (port->direction == PW_DIRECTION_OUTPUT) {
+			struct pw_impl_link *l;
+			/* remove all buffers shared with an output port peer */
+			spa_list_for_each(l, &port->links, output_link)
+				pw_impl_port_use_buffers(l->input, &l->rt.in_mix, 0, NULL, 0);
+		}
 		pw_buffers_clear(&port->buffers);
 		pw_buffers_clear(&port->mix_buffers);
 
@@ -1567,6 +1573,7 @@ int pw_impl_port_use_buffers(struct pw_impl_port *port, struct pw_impl_port_mix 
 		return -EIO;
 
 	if (n_buffers == 0) {
+		mix->have_buffers = false;
 		if (port->n_mix == 1)
 			pw_impl_port_update_state(port, PW_IMPL_PORT_STATE_READY, 0, NULL);
 	}

@@ -314,7 +314,7 @@ static int add_pro_profile(pa_card *impl, uint32_t index)
 	snd_pcm_uframes_t try_period_size, try_buffer_size;
 
 	ss.format = PA_SAMPLE_S32LE;
-	ss.rate = DEFAULT_RATE;
+	ss.rate = impl->rate;
 	ss.channels = 64;
 
 	ap = pa_xnew0(pa_alsa_profile, 1);
@@ -322,6 +322,7 @@ static int add_pro_profile(pa_card *impl, uint32_t index)
 	ap->profile.name = ap->name = pa_xstrdup("pro-audio");
 	ap->profile.description = ap->description = pa_xstrdup(_("Pro Audio"));
 	ap->profile.available = ACP_AVAILABLE_YES;
+	ap->profile.flags = ACP_PROFILE_PRO;
 	ap->output_mappings = pa_idxset_new(pa_idxset_trivial_hash_func, pa_idxset_trivial_compare_func);
 	ap->input_mappings = pa_idxset_new(pa_idxset_trivial_hash_func, pa_idxset_trivial_compare_func);
 	pa_hashmap_put(ps->profiles, ap->name, ap);
@@ -448,8 +449,7 @@ static void add_profiles(pa_card *impl)
 	ap->profile.flags = ACP_PROFILE_OFF;
 	pa_hashmap_put(impl->profiles, ap->name, ap);
 
-	if (!impl->use_ucm)
-		add_pro_profile(impl, impl->card.index);
+	add_pro_profile(impl, impl->card.index);
 
 	PA_HASHMAP_FOREACH(ap, impl->profile_set->profiles, state) {
 		pa_alsa_mapping *m;
@@ -469,10 +469,12 @@ static void add_profiles(pa_card *impl)
 					pa_dynarray_append(&impl->out.devices, dev);
 				}
 				if (impl->use_ucm) {
-					pa_alsa_ucm_add_ports_combination(NULL, &m->ucm_context,
-						true, impl->ports, ap, NULL);
-					pa_alsa_ucm_add_ports(&dev->ports, m->proplist, &m->ucm_context,
-						true, impl, dev->pcm_handle, impl->profile_set->ignore_dB);
+					if (m->ucm_context.ucm_devices) {
+						pa_alsa_ucm_add_ports_combination(NULL, &m->ucm_context,
+							true, impl->ports, ap, NULL);
+						pa_alsa_ucm_add_ports(&dev->ports, m->proplist, &m->ucm_context,
+							true, impl, dev->pcm_handle, impl->profile_set->ignore_dB);
+					}
 				}
 				else
 					pa_alsa_path_set_add_ports(m->output_path_set, ap, impl->ports,
@@ -491,10 +493,12 @@ static void add_profiles(pa_card *impl)
 				}
 
 				if (impl->use_ucm) {
-					pa_alsa_ucm_add_ports_combination(NULL, &m->ucm_context,
-						false, impl->ports, ap, NULL);
-					pa_alsa_ucm_add_ports(&dev->ports, m->proplist, &m->ucm_context,
-						false, impl, dev->pcm_handle, impl->profile_set->ignore_dB);
+					if (m->ucm_context.ucm_devices) {
+						pa_alsa_ucm_add_ports_combination(NULL, &m->ucm_context,
+							false, impl->ports, ap, NULL);
+						pa_alsa_ucm_add_ports(&dev->ports, m->proplist, &m->ucm_context,
+							false, impl, dev->pcm_handle, impl->profile_set->ignore_dB);
+					}
 				} else
 					pa_alsa_path_set_add_ports(m->input_path_set, ap, impl->ports,
 							dev->ports, NULL);
@@ -1443,7 +1447,7 @@ int acp_card_set_profile(struct acp_card *card, uint32_t new_index, uint32_t fla
 	}
 
 	/* if UCM is available for this card then update the verb */
-	if (impl->use_ucm) {
+	if (impl->use_ucm && !(np->profile.flags & ACP_PROFILE_PRO)) {
 		if ((res = pa_alsa_ucm_set_profile(&impl->ucm, impl,
 		    np->profile.flags & ACP_PROFILE_OFF ? NULL : np->profile.name,
 		    op ? op->profile.name : NULL)) < 0) {
@@ -1453,20 +1457,26 @@ int acp_card_set_profile(struct acp_card *card, uint32_t new_index, uint32_t fla
 
 	if (np->output_mappings) {
 		PA_IDXSET_FOREACH(am, np->output_mappings, idx) {
-			if (impl->use_ucm)
+			if (impl->use_ucm) {
 				/* Update ports priorities */
-				pa_alsa_ucm_add_ports_combination(am->output.ports, &am->ucm_context,
-					true, impl->ports, np, NULL);
+				if (am->ucm_context.ucm_devices) {
+					pa_alsa_ucm_add_ports_combination(am->output.ports, &am->ucm_context,
+						true, impl->ports, np, NULL);
+				}
+			}
 			device_enable(impl, am, &am->output);
 		}
 	}
 
 	if (np->input_mappings) {
 		PA_IDXSET_FOREACH(am, np->input_mappings, idx) {
-			if (impl->use_ucm)
+			if (impl->use_ucm) {
 				/* Update ports priorities */
-				pa_alsa_ucm_add_ports_combination(am->input.ports, &am->ucm_context,
-					false, impl->ports, np, NULL);
+				if (am->ucm_context.ucm_devices) {
+					pa_alsa_ucm_add_ports_combination(am->input.ports, &am->ucm_context,
+						false, impl->ports, np, NULL);
+				}
+			}
 			device_enable(impl, am, &am->input);
 		}
 	}
@@ -1553,6 +1563,7 @@ struct acp_card *acp_card_new(uint32_t index, const struct acp_dict *props)
 	impl->auto_profile = true;
 	impl->auto_port = true;
 	impl->ignore_dB = false;
+	impl->rate = DEFAULT_RATE;
 
 	if (props) {
 		if ((s = acp_dict_lookup(props, "api.alsa.use-ucm")) != NULL)
@@ -1569,10 +1580,12 @@ struct acp_card *acp_card_new(uint32_t index, const struct acp_dict *props)
 			impl->auto_profile = spa_atob(s);
 		if ((s = acp_dict_lookup(props, "api.acp.auto-port")) != NULL)
 			impl->auto_port = spa_atob(s);
+		if ((s = acp_dict_lookup(props, "api.acp.probe-rate")) != NULL)
+			impl->rate = atoi(s);
 	}
 
 	impl->ucm.default_sample_spec.format = PA_SAMPLE_S16NE;
-	impl->ucm.default_sample_spec.rate = DEFAULT_RATE;
+	impl->ucm.default_sample_spec.rate = impl->rate;
 	impl->ucm.default_sample_spec.channels = 2;
 	pa_channel_map_init_extend(&impl->ucm.default_channel_map,
 			impl->ucm.default_sample_spec.channels, PA_CHANNEL_MAP_ALSA);

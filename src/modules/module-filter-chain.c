@@ -38,6 +38,7 @@
 #include <spa/utils/result.h>
 #include <spa/utils/string.h>
 #include <spa/utils/json.h>
+#include <spa/support/cpu.h>
 #include <spa/param/profiler.h>
 #include <spa/pod/dynamic.h>
 #include <spa/debug/pod.h>
@@ -560,6 +561,8 @@ struct impl {
 	struct spa_hook core_proxy_listener;
 	struct spa_hook core_listener;
 
+	struct dsp_ops dsp;
+
 	struct spa_list plugin_list;
 
 	struct pw_properties *capture_props;
@@ -1068,9 +1071,9 @@ static const struct pw_stream_events out_stream_events = {
 static int setup_streams(struct impl *impl)
 {
 	int res;
-	uint32_t i, n_params;
-	uint32_t offsets[512];
-	const struct spa_pod *params[512];
+	uint32_t i, n_params, *offs;
+	struct pw_array offsets;
+	const struct spa_pod **params = NULL;
 	struct spa_pod_dynamic_builder b;
 	struct graph *graph = &impl->graph;
 
@@ -1094,23 +1097,40 @@ static int setup_streams(struct impl *impl)
 			&impl->playback_listener,
 			&out_stream_events, impl);
 
-	n_params = 0;
 	spa_pod_dynamic_builder_init(&b, NULL, 0, 4096);
+	pw_array_init(&offsets, 512);
 
-	offsets[n_params++] = b.b.state.offset;
+	if ((offs = pw_array_add(&offsets, sizeof(uint32_t))) == NULL) {
+		res = -errno;
+		goto done;
+	}
+	*offs = b.b.state.offset;
 	spa_format_audio_raw_build(&b.b,
 			SPA_PARAM_EnumFormat, &impl->capture_info);
 
 	for (i = 0; i < graph->n_control; i++) {
-		offsets[n_params++] = b.b.state.offset;
+		if ((offs = pw_array_add(&offsets, sizeof(uint32_t))) != NULL)
+			*offs = b.b.state.offset;
 		get_prop_info(graph, &b.b, i);
 	}
 
-	offsets[n_params++] = b.b.state.offset;
+	if ((offs = pw_array_add(&offsets, sizeof(uint32_t))) != NULL)
+		*offs = b.b.state.offset;
 	get_props_param(graph, &b.b);
 
+	n_params = pw_array_get_len(&offsets, uint32_t);
+	if (n_params == 0) {
+		res = -ENOMEM;
+		goto done;
+	}
+	if ((params = calloc(n_params, sizeof(struct spa_pod*))) == NULL) {
+		res = -errno;
+		goto done;
+	}
+
+	offs = offsets.data;
 	for (i = 0; i < n_params; i++)
-		params[i] = spa_pod_builder_deref(&b.b, offsets[i]);
+		params[i] = spa_pod_builder_deref(&b.b, offs[i]);
 
 	res = pw_stream_connect(impl->capture,
 			PW_DIRECTION_INPUT,
@@ -1122,7 +1142,7 @@ static int setup_streams(struct impl *impl)
 
 	spa_pod_dynamic_builder_clean(&b);
 	if (res < 0)
-		return res;
+		goto done;
 
 	n_params = 0;
 	spa_pod_dynamic_builder_init(&b, NULL, 0, 4096);
@@ -1139,11 +1159,11 @@ static int setup_streams(struct impl *impl)
 			params, n_params);
 	spa_pod_dynamic_builder_clean(&b);
 
-	if (res < 0)
-		return res;
+done:
+	free(params);
+	pw_array_clear(&offsets);
 
-
-	return 0;
+	return res < 0 ? res : 0;
 }
 
 static uint32_t count_array(struct spa_json *json)
@@ -1184,14 +1204,14 @@ static struct plugin *plugin_load(struct impl *impl, const char *type, const cha
 	support = pw_context_get_support(impl->context, &n_support);
 
 	if (spa_streq(type, "builtin")) {
-		pl = load_builtin_plugin(support, n_support, path, NULL);
+		pl = load_builtin_plugin(support, n_support, &impl->dsp, path, NULL);
 	}
 	else if (spa_streq(type, "ladspa")) {
-		pl = load_ladspa_plugin(support, n_support, path, NULL);
+		pl = load_ladspa_plugin(support, n_support, &impl->dsp, path, NULL);
 	}
 	else if (spa_streq(type, "lv2")) {
 #ifdef HAVE_LILV
-		pl = load_lv2_plugin(support, n_support, path, NULL);
+		pl = load_lv2_plugin(support, n_support, &impl->dsp, path, NULL);
 #else
 		pw_log_error("filter-chain is compiled without lv2 support");
 		pl = NULL;
@@ -2244,6 +2264,9 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	uint32_t pid = getpid();
 	const char *str;
 	int res;
+	const struct spa_support *support;
+	uint32_t n_support;
+	struct spa_cpu *cpu_iface;
 
 	PW_LOG_TOPIC_INIT(mod_topic);
 
@@ -2274,9 +2297,15 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 
 	impl->module = module;
 	impl->context = context;
-
 	impl->graph.impl = impl;
+
 	spa_list_init(&impl->plugin_list);
+
+	support = pw_context_get_support(impl->context, &n_support);
+
+	cpu_iface = spa_support_find(support, n_support, SPA_TYPE_INTERFACE_CPU);
+	impl->dsp.cpu_flags = cpu_iface ? spa_cpu_get_flags(cpu_iface) : 0;
+	dsp_ops_init(&impl->dsp);
 
 	if (pw_properties_get(props, PW_KEY_NODE_GROUP) == NULL)
 		pw_properties_setf(props, PW_KEY_NODE_GROUP, "filter-chain-%u-%u", pid, id);

@@ -129,7 +129,7 @@ PW_LOG_TOPIC_STATIC(mod_topic, "mod." NAME);
 			"[ node.latency=<latency as fraction> ] "		\
 			"[ node.name=<name of the nodes> ] "			\
 			"[ node.description=<description of the nodes> ] "	\
-			"[ node.target=<remote node target name> ] "		\
+			"[ node.target=<remote node target name or serial> ] "	\
 			"[ audio.format=<sample format> ] "			\
 			"[ audio.rate=<sample rate> ] "				\
 			"[ audio.channels=<number of channels> ] "		\
@@ -270,7 +270,7 @@ static void update_rate(struct impl *impl, bool playback)
 			impl->current_latency, impl->target_latency);
 
 	SPA_FLAG_SET(impl->rate_match->flags, SPA_IO_RATE_MATCH_FLAG_ACTIVE);
-	impl->rate_match->rate = corr;
+	impl->rate_match->rate = 1.0f / corr;
 }
 
 static void playback_stream_process(void *d)
@@ -708,8 +708,6 @@ static int create_pulse_stream(struct impl *impl)
 	pa_stream_set_latency_update_callback(impl->pa_stream, stream_latency_update_cb, impl);
 
 	remote_node_target = pw_properties_get(impl->props, PW_KEY_TARGET_OBJECT);
-	if (remote_node_target == NULL)
-		remote_node_target = pw_properties_get(impl->props, PW_KEY_NODE_TARGET);
 
 	bufferattr.fragsize = (uint32_t) -1;
 	bufferattr.minreq = (uint32_t) -1;

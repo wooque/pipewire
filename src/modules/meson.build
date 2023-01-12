@@ -71,6 +71,16 @@ if have_sse
   simd_cargs += ['-DHAVE_SSE']
   simd_dependencies += filter_chain_sse
 endif
+if have_avx
+  filter_chain_avx = static_library('filter_chain_avx',
+    ['module-filter-chain/dsp-ops-avx.c' ],
+    c_args : [avx_args, fma_args,'-O3', '-DHAVE_AVX'],
+    dependencies : [ spa_dep ],
+    install : false
+    )
+  simd_cargs += ['-DHAVE_AVX']
+  simd_dependencies += filter_chain_avx
+endif
 if have_neon
   filter_chain_neon = static_library('filter_chain_neon',
     ['module-filter-chain/pffft.c' ],
@@ -495,8 +505,8 @@ pipewire_module_raop_sink = shared_library('pipewire-module-raop-sink',
 endif
 summary({'raop-sink (requires OpenSSL)': build_module_raop}, bool_yn: true, section: 'Optional Modules')
 
-roc_lib = cc.find_library('roc', has_headers: ['roc/config.h' ], required: get_option('roc'))
-summary({'ROC': roc_lib.found()}, bool_yn: true, section: 'Streaming between daemons')
+roc_dep = dependency('roc', required: get_option('roc'))
+summary({'ROC': roc_dep.found()}, bool_yn: true, section: 'Streaming between daemons')
 
 pipewire_module_rtp_source = shared_library('pipewire-module-rtp-source',
   [ 'module-rtp-source.c' ],
@@ -516,7 +526,7 @@ pipewire_module_rtp_sink = shared_library('pipewire-module-rtp-sink',
   dependencies : [mathlib, dl_lib, rt_lib, pipewire_dep],
 )
 
-build_module_roc = roc_lib.found()
+build_module_roc = roc_dep.found()
 if build_module_roc
 pipewire_module_roc_sink = shared_library('pipewire-module-roc-sink',
   [ 'module-roc-sink.c' ],
@@ -524,7 +534,7 @@ pipewire_module_roc_sink = shared_library('pipewire-module-roc-sink',
   install : true,
   install_dir : modules_install_dir,
   install_rpath: modules_install_dir,
-  dependencies : [mathlib, dl_lib, rt_lib, pipewire_dep, roc_lib],
+  dependencies : [mathlib, dl_lib, rt_lib, pipewire_dep, roc_dep],
 )
 
 pipewire_module_roc_source = shared_library('pipewire-module-roc-source',
@@ -533,7 +543,7 @@ pipewire_module_roc_source = shared_library('pipewire-module-roc-source',
   install : true,
   install_dir : modules_install_dir,
   install_rpath: modules_install_dir,
-  dependencies : [mathlib, dl_lib, rt_lib, pipewire_dep, roc_lib],
+  dependencies : [mathlib, dl_lib, rt_lib, pipewire_dep, roc_dep],
 )
 endif
 summary({'roc-sink': build_module_roc}, bool_yn: true, section: 'Optional Modules')
