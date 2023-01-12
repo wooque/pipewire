@@ -1,6 +1,9 @@
 pipewire (0.3.64-1) UNRELEASED; urgency=medium
 
   * New upstream release
+  * Drop patches included in upstream release:
+      - c7b3ef0d: bluez5: backend-native: fix missing brace in CIND reply
+      - 624e265f: pulse-server: clear the drained state correctly
 
  -- Dylan Aïssi <daissi@debian.org>  Thu, 12 Jan 2023 17:15:09 +0100
 
