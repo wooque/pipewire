@@ -1,4 +1,0 @@
-- pipewire-pulse should recommend pipewire-alsa:
-   When the pulseaudio package is installed, all sound are routed through
-   pulseaudio. PipeWire should mimic this behavior by adding the recommend
-   between pipewire-pulse and pipewire-alsa.
