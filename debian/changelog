@@ -1,4 +1,4 @@
-pipewire (0.3.64-1) UNRELEASED; urgency=medium
+pipewire (0.3.64-1) unstable; urgency=medium
 
   * New upstream release
   * pipewire-pulse: recommends pipewire-alsa
@@ -13,7 +13,7 @@ pipewire (0.3.64-1) UNRELEASED; urgency=medium
       - 1d9640af: fixes problems with stuttering with some custom configurations
       - ccedf172: fixed bug in AVX optimizations causing crackling
 
- -- Dylan Aïssi <daissi@debian.org>  Tue, 17 Jan 2023 10:06:35 +0100
+ -- Dylan Aïssi <daissi@debian.org>  Tue, 17 Jan 2023 10:38:57 +0100
 
 pipewire (0.3.63-4) unstable; urgency=medium
 
