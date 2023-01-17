@@ -1,11 +1,19 @@
 pipewire (0.3.64-1) UNRELEASED; urgency=medium
 
   * New upstream release
+  * pipewire-pulse: recommends pipewire-alsa
+      When the pulseaudio package is installed, all sound are routed through
+      pulseaudio. PipeWire should mimic this behavior by adding the recommend
+      between pipewire-pulse and pipewire-alsa. Thus all sound are routed
+      through pipewire.
   * Drop patches included in upstream release:
       - c7b3ef0d: bluez5: backend-native: fix missing brace in CIND reply
       - 624e265f: pulse-server: clear the drained state correctly
+  * Cherry-pick upstream recommended patches:
+      - 1d9640af: fixes problems with stuttering with some custom configurations
+      - ccedf172: fixed bug in AVX optimizations causing crackling
 
- -- Dylan Aïssi <daissi@debian.org>  Thu, 12 Jan 2023 17:15:09 +0100
+ -- Dylan Aïssi <daissi@debian.org>  Tue, 17 Jan 2023 10:06:35 +0100
 
 pipewire (0.3.63-4) unstable; urgency=medium
 
