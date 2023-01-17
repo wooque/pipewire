@@ -2,7 +2,7 @@ Description: Drop duplicated FULL_PATH_NAMES field
  Keep the one set to NO, since including the full path
  breaks reproducible builds.
 Author: Dylan Aïssi <daissi@debian.org>
-Forwarded: TODO
+Forwarded: https://gitlab.freedesktop.org/pipewire/pipewire/-/commit/4e9c3b26
 
 --- a/doc/Doxyfile.in
 +++ b/doc/Doxyfile.in

@@ -1,11 +1,7 @@
-From 249c39787684dba59c288a3ac6dcb8cb0150ec02 Mon Sep 17 00:00:00 2001
-From: =?UTF-8?q?Dylan=20A=C3=AFssi?= <dylan.aissi@collabora.com>
+From: Dylan Aïssi <dylan.aissi@collabora.com>
 Date: Thu, 4 Nov 2021 16:01:36 +0100
 Subject: [PATCH] meson: create a symlink for pipewire-pulse instead of
  building binary twice
-MIME-Version: 1.0
-Content-Type: text/plain; charset=UTF-8
-Content-Transfer-Encoding: 8bit
 
 Because meson does not have native support for symlinks.
 See https://github.com/mesonbuild/meson/issues/1602
