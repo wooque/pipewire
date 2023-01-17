@@ -1,5 +1,7 @@
 Don-t-automatically-start-pipewire-for-root-logins.patch
 Don-t-build_same_binary_twice.patch
 Fix_services.patch
+# Recommended patch for 0.3.64
 Reproducible_doxygen.patch
-# Recommended patch for 0.3.6X
+1d9640af5a7906620f214aa0a39c63128c8506a6.patch
+ccedf1722ae44c97ec0d058b349494c67a0b56dc.patch
