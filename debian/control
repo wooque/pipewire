@@ -421,3 +421,24 @@ Description: transitional package for pipewire-alsa and pipewire-jack
  .
  This is a transitional package for pipewire-alsa and pipewire-jack.
  It can safely be removed.
+
+Package: pipewire-audio
+Section: sound
+Architecture: all
+Depends: ${misc:Depends},
+         libspa-0.2-bluetooth,
+         pipewire-alsa (= ${binary:Version}),
+         pipewire-pulse (= ${binary:Version}),
+         wireplumber
+Conflicts: pulseaudio
+Description: recommended set of PipeWire packages for a standard desktop use
+ PipeWire is a server and user space API to deal with multimedia
+ pipelines. This includes:
+ .
+  - Making available sources of video (such as from a capture devices or
+    application provided streams) and multiplexing this with clients.
+  - Accessing sources of video for consumption.
+  - Generating graphs for audio and video processing.
+ .
+ This metapackage depends on a recommended set of pipewire packages
+ for a standard desktop use.
