@@ -427,11 +427,12 @@ Section: sound
 Architecture: all
 Depends: ${misc:Depends},
          libspa-0.2-bluetooth,
-         pipewire-alsa (= ${binary:Version}),
-         pipewire-pulse (= ${binary:Version}),
+         pipewire-alsa,
+         pipewire-pulse,
          wireplumber
 Conflicts: pulseaudio
-Description: recommended set of PipeWire packages for a standard desktop use
+Replaces: pulseaudio
+Description: recommended set of PipeWire packages for a standard audio desktop use
  PipeWire is a server and user space API to deal with multimedia
  pipelines. This includes:
  .
@@ -441,4 +442,4 @@ Description: recommended set of PipeWire packages for a standard desktop use
   - Generating graphs for audio and video processing.
  .
  This metapackage depends on a recommended set of pipewire packages
- for a standard desktop use.
+ for a standard audio desktop use.
