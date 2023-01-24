@@ -1,3 +1,13 @@
+pipewire (0.3.64-3) experimental; urgency=medium
+
+  * pipewire-pulse: do not recommend pipewire-alsa (Closes: #1029377)
+  * Build a new metapackage pipewire-audio depending on recommended pipewire
+      packages for a standard audio desktop use. Not knowing which packages
+      to install is a common source of bug reports. This metapackage should
+      help users to have a working configuration.
+
+ -- Dylan Aïssi <daissi@debian.org>  Tue, 24 Jan 2023 10:43:23 +0100
+
 pipewire (0.3.64-2) unstable; urgency=medium
 
   * Cherry-pick upstream recommended patch:
