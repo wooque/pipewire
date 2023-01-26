@@ -75,8 +75,6 @@ JACK clients can be configured to output via pipewire instead of JACK.
 
 To enable this:
 
-* create an empty file /etc/pipewire/media-session.d/with-jack
-
 * either run JACK clients using the pw-jack(1) wrapper, or copy
   /usr/share/doc/pipewire/examples/ld.so.conf.d/pipewire-jack-*.conf
   into /etc/ld.so.conf.d/ and run ldconfig as root.
