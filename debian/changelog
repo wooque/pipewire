@@ -1,4 +1,4 @@
-pipewire (0.3.65-1) UNRELEASED; urgency=medium
+pipewire (0.3.65-1) unstable; urgency=medium
 
   * New upstream release
   * Drop reference to pipewire-media-session in pipewire.README.Debian
@@ -13,7 +13,7 @@ pipewire (0.3.65-1) UNRELEASED; urgency=medium
   * Install new module-combine-stream in libpipewire-0.3-modules
   * Update symbols file
 
- -- Dylan Aïssi <daissi@debian.org>  Fri, 27 Jan 2023 11:12:40 +0100
+ -- Dylan Aïssi <daissi@debian.org>  Fri, 27 Jan 2023 13:38:34 +0100
 
 pipewire (0.3.64-4) unstable; urgency=medium
 
