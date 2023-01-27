@@ -3,6 +3,11 @@ pipewire (0.3.65-1) UNRELEASED; urgency=medium
   * New upstream release
   * Drop reference to pipewire-media-session in pipewire.README.Debian
       (Closes: #1029671)
+  * Drop patches included in upstream release:
+      - 1d9640af: fixes problems with stuttering with some custom configurations
+      - ccedf172: fixed bug in AVX optimizations causing crackling
+      - a979c0f4: fixes compilation issues with deprecated keys
+      - Reproducible_doxygen.patch
 
  -- Dylan Aïssi <daissi@debian.org>  Fri, 27 Jan 2023 11:12:40 +0100
 
