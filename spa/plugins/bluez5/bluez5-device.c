@@ -49,6 +49,7 @@
 #include <spa/param/bluetooth/audio.h>
 #include <spa/param/bluetooth/type-info.h>
 #include <spa/debug/pod.h>
+#include <spa/debug/log.h>
 
 #include "defs.h"
 #include "media-codecs.h"
@@ -1150,8 +1151,15 @@ static uint32_t get_index_from_profile(struct impl *this, uint32_t profile, enum
 	if (profile == DEVICE_PROFILE_OFF || profile == DEVICE_PROFILE_AG)
 		return profile;
 
-	if (profile == DEVICE_PROFILE_A2DP || profile == DEVICE_PROFILE_BAP) {
+	if (profile == DEVICE_PROFILE_A2DP) {
 		if (codec == 0 || (this->bt_dev->connected_profiles & SPA_BT_PROFILE_MEDIA_SOURCE))
+			return profile;
+
+		return codec + DEVICE_PROFILE_LAST;
+	}
+
+	if (profile == DEVICE_PROFILE_BAP) {
+		if (codec == 0)
 			return profile;
 
 		return codec + DEVICE_PROFILE_LAST;
@@ -2107,7 +2115,7 @@ static int impl_set_param(void *object,
 				SPA_PARAM_PROFILE_index, SPA_POD_Int(&idx),
 				SPA_PARAM_PROFILE_save, SPA_POD_OPT_Bool(&save))) < 0) {
 			spa_log_warn(this->log, "can't parse profile");
-			spa_debug_pod(0, NULL, param);
+			spa_debug_log_pod(this->log, SPA_LOG_LEVEL_DEBUG, 0, NULL, param);
 			return res;
 		}
 
@@ -2135,7 +2143,7 @@ static int impl_set_param(void *object,
 				SPA_PARAM_ROUTE_props, SPA_POD_OPT_Pod(&props),
 				SPA_PARAM_ROUTE_save, SPA_POD_OPT_Bool(&save))) < 0) {
 			spa_log_warn(this->log, "can't parse route");
-			spa_debug_pod(0, NULL, param);
+			spa_debug_log_pod(this->log, SPA_LOG_LEVEL_DEBUG, 0, NULL, param);
 			return res;
 		}
 		if (device > 1 || !this->nodes[device].active)
@@ -2166,7 +2174,7 @@ static int impl_set_param(void *object,
 				SPA_PROP_bluetoothAudioCodec, SPA_POD_OPT_Id(&codec_id),
 				SPA_PROP_bluetoothOffloadActive, SPA_POD_OPT_Bool(&offload_active))) < 0) {
 			spa_log_warn(this->log, "can't parse props");
-			spa_debug_pod(0, NULL, param);
+			spa_debug_log_pod(this->log, SPA_LOG_LEVEL_DEBUG, 0, NULL, param);
 			return res;
 		}
 

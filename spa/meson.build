@@ -42,8 +42,11 @@ if get_option('spa-plugins').allowed()
   alsa_dep = dependency('alsa', required: get_option('alsa'))
   summary({'ALSA': alsa_dep.found()}, bool_yn: true, section: 'Backend')
   bluez_dep = dependency('bluez', version : '>= 4.101', required: get_option('bluez5'))
-  summary({'Bluetooth audio': bluez_dep.found()}, bool_yn: true, section: 'Backend')
-  if bluez_dep.found()
+  gio_dep = dependency('gio-2.0', required : get_option('bluez5'))
+  gio_unix_dep = dependency('gio-unix-2.0', required : get_option('bluez5'))
+  bluez_deps_found = bluez_dep.found() and gio_dep.found() and gio_unix_dep.found()
+  summary({'Bluetooth audio': bluez_deps_found}, bool_yn: true, section: 'Backend')
+  if bluez_deps_found
     sbc_dep = dependency('sbc', required: get_option('bluez5'))
     summary({'SBC': sbc_dep.found()}, bool_yn: true, section: 'Bluetooth audio codecs')
     ldac_dep = dependency('ldacBT-enc', required : get_option('bluez5-codec-ldac'))
@@ -71,7 +74,6 @@ if get_option('spa-plugins').allowed()
       summary({'ModemManager': mm_dep.found()}, bool_yn: true, section: 'Bluetooth backends')
     endif
   endif
-  avcodec_dep = dependency('libavcodec', required: get_option('ffmpeg'))
   jack_dep = dependency('jack', version : '>= 1.9.10', required: get_option('jack'))
   summary({'JACK2': jack_dep.found()}, bool_yn: true, section: 'Backend')
   vulkan_dep = dependency('vulkan', disabler : true, version : '>= 1.1.69', required: get_option('vulkan'))
@@ -80,6 +82,10 @@ if get_option('spa-plugins').allowed()
 
   libcamera_dep = dependency('libcamera', required: get_option('libcamera'))
   summary({'libcamera': libcamera_dep.found()}, bool_yn: true, section: 'Backend')
+
+  tinycompress_dep = cc.find_library('tinycompress', has_headers: ['tinycompress/tinycompress.h' ], required: get_option('compress-offload'))
+  summary({'Compress-Offload': tinycompress_dep.found()}, bool_yn: true, section: 'Backend')
+  cdata.set('HAVE_ALSA_COMPRESS_OFFLOAD', tinycompress_dep.found())
 
   # common dependencies
   libudev_dep = dependency('libudev', required: alsa_dep.found() or get_option('udev').enabled() or get_option('v4l2').enabled())

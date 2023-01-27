@@ -42,6 +42,7 @@
 #include <spa/param/latency-utils.h>
 #include <spa/debug/format.h>
 #include <spa/debug/pod.h>
+#include <spa/debug/log.h>
 
 #undef SPA_LOG_TOPIC_DEFAULT
 #define SPA_LOG_TOPIC_DEFAULT log_topic
@@ -299,7 +300,7 @@ static int debug_params(struct impl *this, struct spa_node *node,
 
 	if (filter) {
 		spa_log_error(this->log, "with this filter:");
-		spa_debug_pod(2, NULL, filter);
+		spa_debug_log_pod(this->log, SPA_LOG_LEVEL_DEBUG, 2, NULL, filter);
 	} else {
 		spa_log_error(this->log, "there was no filter");
 	}
@@ -317,7 +318,7 @@ static int debug_params(struct impl *this, struct spa_node *node,
 			break;
 		}
 		spa_log_error(this->log, "unmatched %s %d:", debug, count);
-		spa_debug_pod(2, NULL, param);
+		spa_debug_log_pod(this->log, SPA_LOG_LEVEL_DEBUG, 2, NULL, param);
 		count++;
 	}
 	if (count == 0)
@@ -442,8 +443,8 @@ static int configure_format(struct impl *this, uint32_t flags, const struct spa_
 	int res;
 
 	spa_log_debug(this->log, "%p: configure format:", this);
-	if (format && spa_log_level_enabled(this->log, SPA_LOG_LEVEL_DEBUG))
-		spa_debug_format(0, NULL, format);
+	if (format)
+		spa_debug_log_format(this->log, SPA_LOG_LEVEL_DEBUG, 0, NULL, format);
 
 	if ((res = spa_node_port_set_param(this->follower,
 					   this->direction, 0,

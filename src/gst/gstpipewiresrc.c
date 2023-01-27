@@ -428,6 +428,9 @@ gst_pipewire_src_init (GstPipeWireSrc * src)
   /* we operate in time */
   gst_base_src_set_format (GST_BASE_SRC (src), GST_FORMAT_TIME);
 
+  /* we're a live source, unless explicitly requested not to be */
+  gst_base_src_set_live (GST_BASE_SRC (src), TRUE);
+
   GST_OBJECT_FLAG_SET (src, GST_ELEMENT_FLAG_PROVIDE_CLOCK);
 
   src->always_copy = DEFAULT_ALWAYS_COPY;
@@ -670,7 +673,7 @@ parse_stream_properties (GstPipeWireSrc *pwsrc, const struct pw_properties *prop
 
   GST_OBJECT_LOCK (pwsrc);
   var = pw_properties_get (props, PW_KEY_STREAM_IS_LIVE);
-  is_live = pwsrc->is_live = var ? pw_properties_parse_bool(var) : FALSE;
+  is_live = pwsrc->is_live = var ? pw_properties_parse_bool(var) : TRUE;
 
   var = pw_properties_get (props, PW_KEY_STREAM_LATENCY_MIN);
   pwsrc->min_latency = var ? (GstClockTime) atoi (var) : 0;
@@ -964,14 +967,14 @@ on_param_changed (void *data, uint32_t id,
     uint32_t buffers = CLAMP (16, pwsrc->min_buffers, pwsrc->max_buffers);
     int buffertypes;
 
+    buffertypes = (1<<SPA_DATA_DmaBuf);
     if (spa_pod_find_prop (param, NULL, SPA_FORMAT_VIDEO_modifier)) {
-      buffertypes = (1<<SPA_DATA_DmaBuf);
       gst_caps_features_remove (gst_caps_get_features (pwsrc->caps, 0),
           GST_CAPS_FEATURE_MEMORY_SYSTEM_MEMORY);
       gst_caps_features_add (gst_caps_get_features (pwsrc->caps, 0),
           GST_CAPS_FEATURE_MEMORY_DMABUF);
     } else {
-      buffertypes = ((1<<SPA_DATA_MemFd) | (1<<SPA_DATA_MemPtr));
+      buffertypes |= ((1<<SPA_DATA_MemFd) | (1<<SPA_DATA_MemPtr));
     }
 
     GST_DEBUG_OBJECT (pwsrc, "we got format %" GST_PTR_FORMAT, pwsrc->caps);

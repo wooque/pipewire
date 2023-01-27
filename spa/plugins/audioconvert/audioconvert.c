@@ -44,7 +44,6 @@
 #include <spa/param/latency-utils.h>
 #include <spa/pod/filter.h>
 #include <spa/debug/types.h>
-#include <spa/debug/pod.h>
 
 #include "volume-ops.h"
 #include "fmt-ops.h"
@@ -1755,7 +1754,7 @@ impl_node_port_enum_params(void *object, int seq,
 			size = this->quantum_limit * 2;
 			/*  scale the buffer size when we can. */
 			if (irate != 0 && orate != 0)
-				size = size * (irate + orate - 1) / orate;
+				size = SPA_SCALE32_UP(size, irate, orate);
 		}
 
 		param = spa_pod_builder_add_object(&b,

@@ -31,11 +31,12 @@
 
 #include <alsa/asoundlib.h>
 
-#include <spa/utils/type.h>
 #include <spa/node/node.h>
+#include <spa/utils/type.h>
 #include <spa/utils/keys.h>
 #include <spa/utils/names.h>
 #include <spa/utils/string.h>
+#include <spa/support/log.h>
 #include <spa/support/loop.h>
 #include <spa/support/plugin.h>
 #include <spa/support/i18n.h>
@@ -46,6 +47,7 @@
 #include <spa/pod/filter.h>
 #include <spa/pod/parser.h>
 #include <spa/debug/pod.h>
+#include <spa/debug/log.h>
 
 #include "alsa.h"
 
@@ -735,7 +737,7 @@ static int impl_set_param(void *object,
 				SPA_PARAM_PROFILE_index, SPA_POD_Int(&idx),
 				SPA_PARAM_PROFILE_save, SPA_POD_OPT_Bool(&save))) < 0) {
 			spa_log_warn(this->log, "can't parse profile");
-			spa_debug_pod(0, NULL, param);
+			spa_debug_log_pod(this->log, SPA_LOG_LEVEL_DEBUG, 0, NULL, param);
 			return res;
 		}
 
@@ -760,7 +762,7 @@ static int impl_set_param(void *object,
 				SPA_PARAM_ROUTE_props, SPA_POD_OPT_Pod(&props),
 				SPA_PARAM_ROUTE_save, SPA_POD_OPT_Bool(&save))) < 0) {
 			spa_log_warn(this->log, "can't parse route");
-			spa_debug_pod(0, NULL, param);
+			spa_debug_log_pod(this->log, SPA_LOG_LEVEL_DEBUG, 0, NULL, param);
 			return res;
 		}
 		if (device >= this->card->n_devices)

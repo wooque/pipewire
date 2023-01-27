@@ -45,10 +45,6 @@ struct ucred {
 };
 #endif
 
-#ifndef spa_debug
-#define spa_debug(...) pw_log_trace(__VA_ARGS__)
-#endif
-
 #define MAX_RATES				32u
 #define CLOCK_MIN_QUANTUM			4u
 #define CLOCK_MAX_QUANTUM			65536u
@@ -1249,8 +1245,6 @@ int pw_impl_port_recalc_latency(struct pw_impl_port *port);
 /** Change the state of the node */
 int pw_impl_node_set_state(struct pw_impl_node *node, enum pw_node_state state);
 
-int pw_impl_node_set_param(struct pw_impl_node *node,
-		uint32_t id, uint32_t flags, const struct spa_pod *param);
 
 int pw_impl_node_update_ports(struct pw_impl_node *node);
 
@@ -1282,17 +1276,19 @@ void pw_control_destroy(struct pw_control *control);
 void pw_impl_client_unref(struct pw_impl_client *client);
 
 #define PW_LOG_OBJECT_POD	(1<<0)
-void pw_log_log_object(enum spa_log_level level, const char *file, int line,
-	   const char *func, uint32_t flags, const void *object);
+void pw_log_log_object(enum spa_log_level level, const struct spa_log_topic *topic,
+		const char *file, int line, const char *func, uint32_t flags,
+		const void *object);
 
-#define pw_log_object(lev,fl,obj)						\
-({										\
-	if (SPA_UNLIKELY(pw_log_level_enabled (lev)))				\
-		pw_log_log_object(lev,__FILE__,__LINE__,__func__,(fl),(obj));	\
+#define pw_log_object(lev,t,fl,obj)				\
+({								\
+	if (SPA_UNLIKELY(pw_log_topic_enabled(lev,t)))		\
+		pw_log_log_object(lev,t,__FILE__,__LINE__,	\
+				__func__,(fl),(obj));		\
 })
 
-#define pw_log_pod(lev,pod) pw_log_object(lev,PW_LOG_OBJECT_POD,pod)
-#define pw_log_format(lev,pod) pw_log_object(lev,PW_LOG_OBJECT_POD,pod)
+#define pw_log_pod(lev,pod) pw_log_object(lev,PW_LOG_TOPIC_DEFAULT,PW_LOG_OBJECT_POD,pod)
+#define pw_log_format(lev,pod) pw_log_object(lev,PW_LOG_TOPIC_DEFAULT,PW_LOG_OBJECT_POD,pod)
 
 bool pw_log_is_default(void);
 
@@ -1302,8 +1298,6 @@ void pw_log_deinit(void);
 void pw_settings_init(struct pw_context *context);
 int pw_settings_expose(struct pw_context *context);
 void pw_settings_clean(struct pw_context *context);
-
-void pw_impl_module_schedule_destroy(struct pw_impl_module *module);
 
 pthread_attr_t *pw_thread_fill_attr(const struct spa_dict *props, pthread_attr_t *attr);
 

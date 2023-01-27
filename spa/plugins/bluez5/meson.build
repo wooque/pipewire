@@ -1,4 +1,6 @@
-bluez5_deps = [ mathlib, dbus_dep, sbc_dep, bluez_dep ]
+gnome = import('gnome')
+
+bluez5_deps = [ mathlib, dbus_dep, glib2_dep, sbc_dep, bluez_dep, gio_dep, gio_unix_dep ]
 foreach dep: bluez5_deps
   if not dep.found()
     subdir_done()
@@ -28,8 +30,25 @@ bluez5_sources = [
   'player.c',
   'bluez5-device.c',
   'bluez5-dbus.c',
-  'hci.c'
+  'hci.c',
+  'dbus-monitor.c',
+  'midi-enum.c',
+  'midi-parser.c',
+  'midi-node.c',
+  'midi-server.c',
 ]
+
+bluez5_interface_src = gnome.gdbus_codegen('bluez5-interface-gen',
+  sources: 'org.bluez.xml',
+  interface_prefix : 'org.bluez.',
+  object_manager: true,
+  namespace : 'Bluez5',
+  annotations : [
+    ['org.bluez.GattCharacteristic1.AcquireNotify()', 'org.gtk.GDBus.C.UnixFD', 'true'],
+    ['org.bluez.GattCharacteristic1.AcquireWrite()', 'org.gtk.GDBus.C.UnixFD', 'true'],
+  ]
+)
+bluez5_sources += [ bluez5_interface_src ]
 
 bluez5_data = ['bluez-hardware.conf']
 
@@ -54,10 +73,14 @@ if get_option('bluez5-backend-hsphfpd').allowed()
   bluez5_sources += ['backend-hsphfpd.c']
 endif
 
+# The library uses GObject, and cannot be unloaded
+bluez5_link_args = [ '-Wl,-z', '-Wl,nodelete' ]
+
 bluez5lib = shared_library('spa-bluez5',
   bluez5_sources,
   include_directories : [ configinc ],
   dependencies : [ spa_dep, bluez5_deps ],
+  link_args : bluez5_link_args,
   install : true,
   install_dir : spa_plugindir / 'bluez5')
 
@@ -146,3 +169,38 @@ if get_option('bluez5-codec-lc3').allowed() and lc3_dep.found()
     install : true,
     install_dir : spa_plugindir / 'bluez5')
 endif
+
+test_apps = [
+  'test-midi',
+]
+bluez5_test_lib = static_library('bluez5_test_lib',
+  [ 'midi-parser.c' ],
+  include_directories : [ configinc ],
+  dependencies : [ spa_dep, bluez5_deps ],
+  install : false
+)
+
+foreach a : test_apps
+  test(a,
+    executable(a, a + '.c',
+      dependencies : [ spa_dep, dl_lib, pthread_lib, mathlib, bluez5_deps ],
+      include_directories : [ configinc ],
+      link_with : [ bluez5_test_lib ],
+      install_rpath : spa_plugindir / 'bluez5',
+      install : installed_tests_enabled,
+      install_dir : installed_tests_execdir / 'bluez5'),
+      env : [
+        'SPA_PLUGIN_DIR=@0@'.format(spa_dep.get_variable('plugindir')),
+        ])
+
+    if installed_tests_enabled
+      test_conf = configuration_data()
+      test_conf.set('exec', installed_tests_execdir / 'bluez5' / a)
+      configure_file(
+        input: installed_tests_template,
+        output: a + '.test',
+        install_dir: installed_tests_metadir / 'bluez5',
+        configuration: test_conf
+        )
+  endif
+endforeach

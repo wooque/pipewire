@@ -34,14 +34,15 @@
 #include <net/if.h>
 #include <ctype.h>
 
-#include <spa/param/audio/format-utils.h>
 #include <spa/utils/hook.h>
+#include <spa/utils/result.h>
 #include <spa/utils/ringbuffer.h>
 #include <spa/utils/dll.h>
+#include <spa/param/audio/format-utils.h>
 #include <spa/debug/mem.h>
 
 #include <pipewire/pipewire.h>
-#include <pipewire/private.h>
+#include <pipewire/impl.h>
 
 #include <module-rtp/sap.h>
 #include <module-rtp/rtp.h>
@@ -77,19 +78,38 @@
  * ## Example configuration
  *\code{.unparsed}
  * context.modules = [
- *  {   name = libpipewire-module-rtp-source
- *      args = {
- *          #sap.ip = 224.0.0.56
- *          #sap.port = 9875
- *          #local.ifname = eth0
- *          sess.latency.msec = 100
- *          stream.props = {
- *             node.name = "rtp-source"
- *             #media.class = "Audio/Source"
- *          }
- *      }
- *  }
- *]
+ * {   name = libpipewire-module-rtp-source
+ *     args = {
+ *         #sap.ip = 224.0.0.56
+ *         #sap.port = 9875
+ *         #local.ifname = eth0
+ *         sess.latency.msec = 100
+ *         stream.props = {
+ *            #media.class = "Audio/Source"
+ *            #node.name = "rtp-source"
+ *         }
+ *         stream.rules = [
+ *             {   matches = [
+ *                     # any of the items in matches needs to match, if one does,
+ *                     # actions are emited.
+ *                     {   # all keys must match the value. ~ in value starts regex.
+ *                         #rtp.origin = "wim 3883629975 0 IN IP4 0.0.0.0"
+ *                         #rtp.payload = "127"
+ *                         #rtp.fmt = "L16/48000/2"
+ *                         #rtp.session = "PipeWire RTP Stream on fedora"
+ *                     }
+ *                 ]
+ *                 actions = {
+ *                     create-stream = {
+ *                         #sess.latency.msec = 100
+ *                         #target.object = ""
+ *                     }
+ *                 }
+ *             }
+ *         ]
+ *     }
+ * }
+ * ]
  *\endcode
  *
  * \since 0.3.60
@@ -100,24 +120,25 @@
 PW_LOG_TOPIC_STATIC(mod_topic, "mod." NAME);
 #define PW_LOG_TOPIC_DEFAULT mod_topic
 
-#define SAP_MIME_TYPE		"application/sdp"
+#define SAP_MIME_TYPE			"application/sdp"
 
-#define ERROR_MSEC		2
-#define MAX_SESSIONS		16
-#define CLEANUP_INTERVAL_SEC	20
+#define ERROR_MSEC			2
+#define MAX_SESSIONS			16
 
-#define DEFAULT_SAP_IP		"224.0.0.56"
-#define DEFAULT_SAP_PORT	9875
-#define DEFAULT_SESS_LATENCY	100
+#define DEFAULT_CLEANUP_INTERVAL_SEC	90
+#define DEFAULT_SAP_IP			"224.0.0.56"
+#define DEFAULT_SAP_PORT		9875
+#define DEFAULT_SESS_LATENCY		100
 
-#define BUFFER_SIZE		(1u<<22)
-#define BUFFER_MASK		(BUFFER_SIZE-1)
+#define BUFFER_SIZE			(1u<<22)
+#define BUFFER_MASK			(BUFFER_SIZE-1)
 
 #define USAGE	"sap.ip=<SAP IP address to listen on, default "DEFAULT_SAP_IP"> "				\
 		"sap.port=<SAP port to listen on, default "SPA_STRINGIFY(DEFAULT_SAP_PORT)"> "			\
 		"local.ifname=<local interface name to use> "							\
 		"sess.latency.msec=<target network latency, default "SPA_STRINGIFY(DEFAULT_SESS_LATENCY)"> "	\
-		"stream.props= { key=value ... }"
+		"stream.props= { key=value ... } "								\
+		"stream.rules=<rules> "
 
 static const struct spa_dict_item module_info[] = {
 	{ PW_KEY_MODULE_AUTHOR, "Wim Taymans <wim.taymans@gmail.com>" },
@@ -150,6 +171,7 @@ struct impl {
 	char *sap_ip;
 	int sap_port;
 	int sess_latency_msec;
+	uint32_t cleanup_interval;
 
 	struct spa_list sessions;
 	uint32_t n_sessions;
@@ -217,8 +239,10 @@ struct session {
 	struct spa_io_rate_match *rate_match;
 	struct spa_dll dll;
 	uint32_t target_buffer;
+	uint32_t last_packet_size;
 	float max_error;
 	unsigned buffering:1;
+	unsigned first:1;
 };
 
 static void stream_destroy(void *d)
@@ -233,8 +257,8 @@ static void stream_process(void *data)
 	struct session *sess = data;
 	struct pw_buffer *buf;
 	struct spa_data *d;
-	uint32_t index;
-        int32_t avail, wanted;
+	uint32_t index, target_buffer;
+	int32_t avail, wanted;
 
 	if ((buf = pw_stream_dequeue_buffer(sess->stream)) == NULL) {
 		pw_log_debug("Out of stream buffers: %m");
@@ -248,27 +272,39 @@ static void stream_process(void *data)
 
 	avail = spa_ringbuffer_get_read_index(&sess->ring, &index);
 
-        if (avail < wanted || sess->buffering) {
-                memset(d[0].data, 0, wanted);
+	target_buffer = sess->target_buffer + sess->last_packet_size / 2;
+
+	if (avail < wanted || sess->buffering) {
+		memset(d[0].data, 0, wanted);
 		if (!sess->buffering && sess->have_sync) {
-			pw_log_info("underrun %u/%u < %u, buffering...",
-					avail, sess->target_buffer, wanted);
+			pw_log_debug("underrun %u/%u < %u, buffering...",
+					avail, target_buffer, wanted);
 			sess->buffering = true;
 		}
-        } else {
+	} else {
 		float error, corr;
-		if (avail > (int32_t)BUFFER_SIZE) {
-			index += avail - sess->target_buffer;
-			avail = sess->target_buffer;
-			pw_log_warn("overrun %u > %u", avail, BUFFER_SIZE);
+		if (avail > (int32_t)SPA_MIN(target_buffer * 8, BUFFER_SIZE)) {
+			pw_log_warn("overrun %u > %u", avail, target_buffer * 8);
+			index += avail - target_buffer;
+			avail = target_buffer;
 		} else {
-			error = (float)sess->target_buffer - (float)avail;
+			if (sess->first) {
+				if ((uint32_t)avail > target_buffer) {
+					uint32_t skip = avail - target_buffer;
+					pw_log_debug("first: avail:%d skip:%u target:%u",
+							avail, skip, target_buffer);
+					index += skip;
+					avail = target_buffer;
+				}
+				sess->first = false;
+			}
+			error = (float)target_buffer - (float)avail;
 			error = SPA_CLAMP(error, -sess->max_error, sess->max_error);
 
 			corr = spa_dll_update(&sess->dll, error);
 
 			pw_log_debug("avail:%u target:%u error:%f corr:%f", avail,
-					sess->target_buffer, error, corr);
+					target_buffer, error, corr);
 
 			if (sess->rate_match) {
 				SPA_FLAG_SET(sess->rate_match->flags, SPA_IO_RATE_MATCH_FLAG_ACTIVE);
@@ -278,16 +314,16 @@ static void stream_process(void *data)
 		spa_ringbuffer_read_data(&sess->ring,
 				sess->buffer,
 				BUFFER_SIZE,
-                                index & BUFFER_MASK,
-                                d[0].data, wanted);
+				index & BUFFER_MASK,
+				d[0].data, wanted);
 
-                index += wanted;
-                spa_ringbuffer_read_update(&sess->ring, index);
-        }
-        d[0].chunk->size = wanted;
-        d[0].chunk->stride = sess->info.stride;
-        d[0].chunk->offset = 0;
-        buf->size = wanted / sess->info.stride;
+		index += wanted;
+		spa_ringbuffer_read_update(&sess->ring, index);
+	}
+	d[0].chunk->size = wanted;
+	d[0].chunk->stride = sess->info.stride;
+	d[0].chunk->offset = 0;
+	buf->size = wanted / sess->info.stride;
 
 	pw_stream_queue_buffer(sess->stream, buf);
 }
@@ -342,7 +378,6 @@ on_rtp_io(void *data, int fd, uint32_t mask)
 		uint16_t seq;
 		int32_t filled;
 
-		pw_log_trace("got rtp");
 		if ((len = recv(fd, buffer, sizeof(buffer), 0)) < 0)
 			goto receive_error;
 
@@ -378,17 +413,19 @@ on_rtp_io(void *data, int fd, uint32_t mask)
 		expected_index = timestamp * sess->info.stride;
 
 		if (!sess->have_sync) {
+			pw_log_trace("got rtp, no sync");
 			sess->ring.readindex = sess->ring.writeindex =
 				index = expected_index;
 			filled = 0;
 			sess->have_sync = true;
 			sess->buffering = true;
-			pw_log_info("sync to timestamp %u", index);
+			pw_log_debug("sync to timestamp %u", index);
 
 			spa_dll_init(&sess->dll);
 			spa_dll_set_bw(&sess->dll, SPA_DLL_BW_MIN, 128, sess->info.info.rate);
 
 		} else if (expected_index != index) {
+			pw_log_trace("got rtp, wrong timestamp");
 			pw_log_debug("unexpected timestamp (%u != %u)",
 					index / sess->info.stride,
 					expected_index / sess->info.stride);
@@ -397,9 +434,12 @@ on_rtp_io(void *data, int fd, uint32_t mask)
 		}
 
 		if (filled + len > BUFFER_SIZE) {
-			pw_log_warn("capture overrun %u %zd", filled, len);
+			pw_log_debug("got rtp, capture overrun %u %zd", filled, len);
 			sess->have_sync = false;
 		} else {
+			uint32_t target_buffer;
+
+			pw_log_trace("got rtp packet len:%zd", len);
 			spa_ringbuffer_write_data(&sess->ring,
 					sess->buffer,
 					BUFFER_SIZE,
@@ -409,10 +449,13 @@ on_rtp_io(void *data, int fd, uint32_t mask)
 			filled += len;
 			spa_ringbuffer_write_update(&sess->ring, index);
 
-			if (sess->buffering && (uint32_t)filled > sess->target_buffer) {
+			sess->last_packet_size = len;
+			target_buffer = sess->target_buffer + len/2;
+
+			if (sess->buffering && (uint32_t)filled > target_buffer) {
 				sess->buffering = false;
-				pw_log_info("buffering done %u > %u",
-					filled, sess->target_buffer);
+				pw_log_debug("buffering done %u > %u",
+					filled, target_buffer);
 			}
 		}
 	}
@@ -527,8 +570,8 @@ static void session_touch(struct session *sess)
 
 static void session_free(struct session *sess)
 {
-	pw_log_info("free session %s %s", sess->info.origin, sess->info.session);
 	if (sess->impl) {
+		pw_log_info("free session %s %s", sess->info.origin, sess->info.session);
 		sess->impl->n_sessions--;
 		spa_list_remove(&sess->link);
 	}
@@ -539,6 +582,25 @@ static void session_free(struct session *sess)
 	free(sess);
 }
 
+struct session_info {
+	struct session *session;
+	struct pw_properties *props;
+	bool matched;
+};
+
+static int rule_matched(void *data, const char *location, const char *action,
+                        const char *str, size_t len)
+{
+	struct session_info *i = data;
+	int res = 0;
+
+	i->matched = true;
+	if (spa_streq(action, "create-stream")) {
+		pw_properties_update_string(i->props, str, len);
+	}
+	return res;
+}
+
 static int session_new(struct impl *impl, struct sdp_info *info)
 {
 	struct session *session;
@@ -547,7 +609,8 @@ static int session_new(struct impl *impl, struct sdp_info *info)
 	uint32_t n_params;
 	uint8_t buffer[1024];
 	struct pw_properties *props;
-	int res, fd;
+	int res, fd, sess_latency_msec;
+	const char *str;
 
 	if (impl->n_sessions >= MAX_SESSIONS) {
 		pw_log_warn("too many sessions (%u >= %u)", impl->n_sessions, MAX_SESSIONS);
@@ -559,12 +622,7 @@ static int session_new(struct impl *impl, struct sdp_info *info)
 		return -errno;
 
 	session->info = *info;
-
-	session->target_buffer = msec_to_bytes(info, impl->sess_latency_msec);
-	session->max_error = msec_to_bytes(info, ERROR_MSEC);
-
-	spa_dll_init(&session->dll);
-	spa_dll_set_bw(&session->dll, SPA_DLL_BW_MIN, 128, session->info.info.rate);
+	session->first = true;
 
 	props = pw_properties_copy(impl->stream_props);
 	if (props == NULL) {
@@ -572,9 +630,6 @@ static int session_new(struct impl *impl, struct sdp_info *info)
 		goto error;
 	}
 
-	pw_properties_setf(props, PW_KEY_NODE_RATE, "1/%d", info->info.rate);
-	pw_properties_setf(props, PW_KEY_NODE_LATENCY, "%d/%d",
-			session->target_buffer / (2 * info->stride), info->info.rate);
 	pw_properties_set(props, "rtp.origin", info->origin);
 	pw_properties_setf(props, "rtp.payload", "%u", info->payload);
 	pw_properties_setf(props, "rtp.fmt", "%s/%u/%u", info->format_info->mime,
@@ -583,11 +638,41 @@ static int session_new(struct impl *impl, struct sdp_info *info)
 		pw_properties_set(props, "rtp.session", info->session);
 		pw_properties_setf(props, PW_KEY_MEDIA_NAME, "RTP Stream (%s)",
 				info->session);
+		pw_properties_setf(props, PW_KEY_NODE_NAME, "%s",
+				info->session);
 	} else {
 		pw_properties_set(props, PW_KEY_MEDIA_NAME, "RTP Stream");
 	}
 
+	if ((str = pw_properties_get(impl->props, "stream.rules")) != NULL) {
+		struct session_info sinfo = {
+			.session = session,
+			.props = props,
+		};
+		pw_conf_match_rules(str, strlen(str), NAME, &props->dict,
+				rule_matched, &sinfo);
+
+		if (!sinfo.matched) {
+			res = 0;
+			pw_log_info("session '%s' was not matched", info->session);
+			goto error;
+		}
+	}
+
 	pw_log_info("new session %s %s", info->origin, info->session);
+
+	sess_latency_msec = pw_properties_get_uint32(props,
+			"sess.latency.msec", impl->sess_latency_msec);
+
+	session->target_buffer = msec_to_bytes(info, sess_latency_msec);
+	session->max_error = msec_to_bytes(info, ERROR_MSEC);
+
+	pw_properties_setf(props, PW_KEY_NODE_RATE, "1/%d", info->info.rate);
+	pw_properties_setf(props, PW_KEY_NODE_LATENCY, "%d/%d",
+			session->target_buffer / (2 * info->stride), info->info.rate);
+
+	spa_dll_init(&session->dll);
+	spa_dll_set_bw(&session->dll, SPA_DLL_BW_MIN, 128, session->info.info.rate);
 
 	session->stream = pw_stream_new(impl->core,
 			"rtp-source playback", props);
@@ -938,11 +1023,14 @@ static void on_timer_event(void *data, uint64_t expirations)
 
 	clock_gettime(CLOCK_MONOTONIC, &now);
 	timestamp = SPA_TIMESPEC_TO_NSEC(&now);
-	interval = CLEANUP_INTERVAL_SEC * SPA_NSEC_PER_SEC;
+	interval = impl->cleanup_interval * SPA_NSEC_PER_SEC;
 
 	spa_list_for_each_safe(sess, tmp, &impl->sessions, link) {
-		if (sess->timestamp + interval < timestamp)
+		if (sess->timestamp + interval < timestamp) {
+			pw_log_debug("More than %lu elapsed from last advertisement at %lu", interval, sess->timestamp);
+			pw_log_info("No advertisement packets found for timeout, closing RTP source");
 			session_free(sess);
+		}
 	}
 }
 
@@ -1013,7 +1101,6 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 {
 	struct pw_context *context = pw_impl_module_get_context(module);
 	struct impl *impl;
-	struct pw_properties *props = NULL, *stream_props = NULL;
 	const char *str;
 	struct timespec value, interval;
 	int res = 0;
@@ -1024,52 +1111,47 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	if (impl == NULL)
 		return -errno;
 
+	spa_list_init(&impl->sessions);
+
 	if (args == NULL)
 		args = "";
 
-	props = pw_properties_new_string(args);
-	if (props == NULL) {
+	impl->props = pw_properties_new_string(args);
+	impl->stream_props = pw_properties_new(NULL, NULL);
+	if (impl->props == NULL || impl->stream_props == NULL) {
 		res = -errno;
 		pw_log_error( "can't create properties: %m");
 		goto out;
 	}
-	spa_list_init(&impl->sessions);
-	impl->props = props;
-
-	stream_props = pw_properties_new(NULL, NULL);
-	if (stream_props == NULL) {
-		res = -errno;
-		pw_log_error( "can't create properties: %m");
-		goto out;
-	}
-	impl->stream_props = stream_props;
 
 	impl->module = module;
 	impl->module_context = context;
 	impl->loop = pw_context_get_main_loop(context);
 	impl->data_loop = pw_data_loop_get_loop(pw_context_get_data_loop(context));
 
-	if (pw_properties_get(stream_props, PW_KEY_NODE_VIRTUAL) == NULL)
-		pw_properties_set(stream_props, PW_KEY_NODE_VIRTUAL, "true");
-	if (pw_properties_get(stream_props, PW_KEY_NODE_NETWORK) == NULL)
-		pw_properties_set(stream_props, PW_KEY_NODE_NETWORK, "true");
+	if (pw_properties_get(impl->stream_props, PW_KEY_NODE_VIRTUAL) == NULL)
+		pw_properties_set(impl->stream_props, PW_KEY_NODE_VIRTUAL, "true");
+	if (pw_properties_get(impl->stream_props, PW_KEY_NODE_NETWORK) == NULL)
+		pw_properties_set(impl->stream_props, PW_KEY_NODE_NETWORK, "true");
 
-	if ((str = pw_properties_get(props, "stream.props")) != NULL)
-		pw_properties_update_string(stream_props, str, strlen(str));
+	if ((str = pw_properties_get(impl->props, "stream.props")) != NULL)
+		pw_properties_update_string(impl->stream_props, str, strlen(str));
 
-	str = pw_properties_get(props, "local.ifname");
+	str = pw_properties_get(impl->props, "local.ifname");
 	impl->ifname = str ? strdup(str) : NULL;
 
-	str = pw_properties_get(props, "sap.ip");
+	str = pw_properties_get(impl->props, "sap.ip");
 	impl->sap_ip = strdup(str ? str : DEFAULT_SAP_IP);
-	impl->sap_port = pw_properties_get_uint32(props,
+	impl->sap_port = pw_properties_get_uint32(impl->props,
 			"sap.port", DEFAULT_SAP_PORT);
-	impl->sess_latency_msec = pw_properties_get_uint32(props,
+	impl->sess_latency_msec = pw_properties_get_uint32(impl->props,
 			"sess.latency.msec", DEFAULT_SESS_LATENCY);
+	impl->cleanup_interval = pw_properties_get_uint32(impl->props,
+			"sap.interval.sec", DEFAULT_CLEANUP_INTERVAL_SEC);
 
 	impl->core = pw_context_get_object(impl->module_context, PW_TYPE_INTERFACE_Core);
 	if (impl->core == NULL) {
-		str = pw_properties_get(props, PW_KEY_REMOTE_NAME);
+		str = pw_properties_get(impl->props, PW_KEY_REMOTE_NAME);
 		impl->core = pw_context_connect(impl->module_context,
 				pw_properties_new(
 					PW_KEY_REMOTE_NAME, str,
@@ -1098,7 +1180,7 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	}
 	value.tv_sec = 0;
 	value.tv_nsec = 1;
-	interval.tv_sec = CLEANUP_INTERVAL_SEC;
+	interval.tv_sec = impl->cleanup_interval;
 	interval.tv_nsec = 0;
 	pw_loop_update_timer(impl->loop, impl->timer, &value, &interval, false);
 

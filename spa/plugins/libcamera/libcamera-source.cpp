@@ -49,8 +49,8 @@
 #include <spa/node/keys.h>
 #include <spa/param/video/format-utils.h>
 #include <spa/param/param.h>
+#include <spa/control/control.h>
 #include <spa/pod/filter.h>
-#include <spa/debug/pod.h>
 
 #include <libcamera/camera.h>
 #include <libcamera/stream.h>
@@ -676,7 +676,10 @@ static int port_set_format(struct impl *impl, struct port *port,
 			    info.media_subtype == port->current_format->media_subtype &&
 			    info.info.raw.format == port->current_format->info.raw.format &&
 			    info.info.raw.size.width == port->current_format->info.raw.size.width &&
-			    info.info.raw.size.height == port->current_format->info.raw.size.height)
+			    info.info.raw.size.height == port->current_format->info.raw.size.height &&
+			    info.info.raw.flags == port->current_format->info.raw.flags &&
+			    (!(info.info.raw.flags & SPA_VIDEO_FLAG_MODIFIER) ||
+			     (info.info.raw.modifier == port->current_format->info.raw.modifier)))
 				return 0;
 			break;
 		case SPA_MEDIA_SUBTYPE_mjpg:
