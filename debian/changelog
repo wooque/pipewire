@@ -1,3 +1,11 @@
+pipewire (0.3.65-1) UNRELEASED; urgency=medium
+
+  * New upstream release
+  * Drop reference to pipewire-media-session in pipewire.README.Debian
+      (Closes: #1029671)
+
+ -- Dylan Aïssi <daissi@debian.org>  Fri, 27 Jan 2023 11:12:40 +0100
+
 pipewire (0.3.64-4) unstable; urgency=medium
 
   * Source only upload to unstable for migration to testing
