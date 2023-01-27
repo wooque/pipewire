@@ -38,10 +38,10 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#include <spa/debug/pod.h>
+#include <spa/debug/types.h>
 #include <spa/param/audio/format-utils.h>
 #include <spa/param/audio/raw.h>
-#include <spa/param/profiler.h>
+#include <spa/param/latency-utils.h>
 #include <spa/pod/builder.h>
 #include <spa/pod/dynamic.h>
 #include <spa/support/plugin.h>
@@ -53,7 +53,6 @@
 #include <spa/support/plugin-loader.h>
 #include <spa/interfaces/audio/aec.h>
 
-#include <pipewire/private.h>
 #include <pipewire/impl.h>
 #include <pipewire/pipewire.h>
 
@@ -76,6 +75,8 @@
  * - `library.name = <str>`: the echo cancellation library  Currently supported:
  * `aec/libspa-aec-webrtc`. Leave unset to use the default method (`aec/libspa-aec-webrtc`).
  * - `aec.args = <str>`: arguments to pass to the echo cancellation method
+ * - `monitor.mode`: Instead of making a sink, make a stream that captures from
+ *                   the monitor ports of the default sink.
  *
  * ## General options
  *
@@ -101,6 +102,7 @@
  *      args = {
  *          # library.name  = aec/libspa-aec-webrtc
  *          # node.latency = 1024/48000
+ *          # monitor.mode = false
  *          capture.props = {
  *             node.name = "Echo Cancellation Capture"
  *          }
@@ -177,10 +179,12 @@ struct impl {
 	struct pw_properties *capture_props;
 	struct pw_stream *capture;
 	struct spa_hook capture_listener;
+	struct spa_audio_info_raw capture_info;
 
 	struct pw_properties *source_props;
 	struct pw_stream *source;
 	struct spa_hook source_listener;
+	struct spa_audio_info_raw source_info;
 
 	void *rec_buffer[SPA_AUDIO_MAX_CHANNELS];
 	uint32_t rec_ringsize;
@@ -189,6 +193,7 @@ struct impl {
 	struct pw_properties *playback_props;
 	struct pw_stream *playback;
 	struct spa_hook playback_listener;
+	struct spa_audio_info_raw playback_info;
 
 	struct pw_properties *sink_props;
 	struct pw_stream *sink;
@@ -197,6 +202,7 @@ struct impl {
 	uint32_t play_ringsize;
 	struct spa_ringbuffer play_ring;
 	struct spa_ringbuffer play_delayed_ring;
+	struct spa_audio_info_raw sink_info;
 
 	void *out_buffer[SPA_AUDIO_MAX_CHANNELS];
 	uint32_t out_ringsize;
@@ -826,7 +832,7 @@ static int setup_streams(struct impl *impl)
 	spa_pod_dynamic_builder_init(&b, NULL, 0, 4096);
 
 	offsets[n_params++] = b.b.state.offset;
-	spa_format_audio_raw_build(&b.b, SPA_PARAM_EnumFormat, &impl->info);
+	spa_format_audio_raw_build(&b.b, SPA_PARAM_EnumFormat, &impl->capture_info);
 
 	int nbr_of_external_props = spa_audio_aec_enum_props(impl->aec, 0, NULL);
 	if (nbr_of_external_props > 0) {
@@ -837,9 +843,8 @@ static int setup_streams(struct impl *impl)
 		get_props_param(impl, &b.b);
 	}
 
-	for (i = 0; i < n_params; i++) {
+	for (i = 0; i < n_params; i++)
 		params[i] = spa_pod_builder_deref(&b.b, offsets[i]);
-	}
 
 	if ((res = pw_stream_connect(impl->capture,
 			PW_DIRECTION_INPUT,
@@ -852,6 +857,12 @@ static int setup_streams(struct impl *impl)
 		return res;
 	}
 
+	offsets[0] = b.b.state.offset;
+	spa_format_audio_raw_build(&b.b, SPA_PARAM_EnumFormat, &impl->source_info);
+
+	for (i = 0; i < n_params; i++)
+		params[i] = spa_pod_builder_deref(&b.b, offsets[i]);
+
 	if ((res = pw_stream_connect(impl->source,
 			PW_DIRECTION_OUTPUT,
 			PW_ID_ANY,
@@ -861,6 +872,12 @@ static int setup_streams(struct impl *impl)
 		spa_pod_dynamic_builder_clean(&b);
 		return res;
 	}
+
+	offsets[0] = b.b.state.offset;
+	spa_format_audio_raw_build(&b.b, SPA_PARAM_EnumFormat, &impl->sink_info);
+
+	for (i = 0; i < n_params; i++)
+		params[i] = spa_pod_builder_deref(&b.b, offsets[i]);
 
 	if ((res = pw_stream_connect(impl->sink,
 			PW_DIRECTION_INPUT,
@@ -872,6 +889,12 @@ static int setup_streams(struct impl *impl)
 		spa_pod_dynamic_builder_clean(&b);
 		return res;
 	}
+
+	offsets[0] = b.b.state.offset;
+	spa_format_audio_raw_build(&b.b, SPA_PARAM_EnumFormat, &impl->playback_info);
+
+	for (i = 0; i < n_params; i++)
+		params[i] = spa_pod_builder_deref(&b.b, offsets[i]);
 
 	if (impl->playback != NULL && (res = pw_stream_connect(impl->playback,
 			PW_DIRECTION_OUTPUT,
@@ -1104,6 +1127,11 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 
 	parse_audio_info(props, &impl->info);
 
+	impl->capture_info = impl->info;
+	impl->source_info = impl->info;
+	impl->sink_info = impl->info;
+	impl->playback_info = impl->info;
+
 	if ((str = pw_properties_get(props, "capture.props")) != NULL)
 		pw_properties_update_string(impl->capture_props, str, strlen(str));
 	if ((str = pw_properties_get(props, "source.props")) != NULL)
@@ -1157,16 +1185,20 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	if ((path = pw_properties_get(props, "library.name")) == NULL)
 		path = "aec/libspa-aec-webrtc";
 
-	struct spa_dict_item info_items[] = {
-		{ SPA_KEY_LIBRARY_NAME, path },
-	};
-	struct spa_dict info = SPA_DICT_INIT_ARRAY(info_items);
+	const struct spa_support *support;
+	uint32_t n_support;
 
-	impl->loader = spa_support_find(context->support, context->n_support, SPA_TYPE_INTERFACE_PluginLoader);
+	support = pw_context_get_support(context, &n_support);
+	impl->loader = spa_support_find(support, n_support, SPA_TYPE_INTERFACE_PluginLoader);
 	if (impl->loader == NULL) {
 		pw_log_error("a plugin loader is needed");
 		return -EINVAL;
 	}
+
+	struct spa_dict_item info_items[] = {
+		{ SPA_KEY_LIBRARY_NAME, path },
+	};
+	struct spa_dict info = SPA_DICT_INIT_ARRAY(info_items);
 
 	handle = spa_plugin_loader_load(impl->loader, SPA_NAME_AEC, &info);
 	if (handle == NULL) {
@@ -1256,6 +1288,24 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	copy_props(impl, props, SPA_KEY_AUDIO_CHANNELS);
 	copy_props(impl, props, SPA_KEY_AUDIO_POSITION);
 	copy_props(impl, props, "resample.prefill");
+
+	if ((str = pw_properties_get(impl->capture_props, SPA_KEY_AUDIO_POSITION)) != NULL)
+		parse_position(&impl->capture_info, str, strlen(str));
+	if ((str = pw_properties_get(impl->source_props, SPA_KEY_AUDIO_POSITION)) != NULL)
+		parse_position(&impl->source_info, str, strlen(str));
+	if ((str = pw_properties_get(impl->sink_props, SPA_KEY_AUDIO_POSITION)) != NULL)
+		parse_position(&impl->sink_info, str, strlen(str));
+	if ((str = pw_properties_get(impl->playback_props, SPA_KEY_AUDIO_POSITION)) != NULL)
+		parse_position(&impl->playback_info, str, strlen(str));
+
+	if (impl->capture_info.channels != impl->info.channels)
+		impl->capture_info = impl->info;
+	if (impl->source_info.channels != impl->info.channels)
+		impl->source_info = impl->info;
+	if (impl->sink_info.channels != impl->info.channels)
+		impl->sink_info = impl->info;
+	if (impl->playback_info.channels != impl->info.channels)
+		impl->playback_info = impl->info;
 
 	impl->max_buffer_size = pw_properties_get_uint32(props,"buffer.max_size", MAX_BUFSIZE_MS);
 

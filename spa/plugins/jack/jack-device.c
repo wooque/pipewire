@@ -44,6 +44,7 @@
 #include <spa/pod/filter.h>
 #include <spa/pod/parser.h>
 #include <spa/debug/pod.h>
+#include <spa/debug/log.h>
 
 #include "jack-client.h"
 
@@ -337,7 +338,7 @@ static int impl_set_param(void *object,
 				SPA_TYPE_OBJECT_ParamProfile, NULL,
 				SPA_PARAM_PROFILE_index, SPA_POD_Int(&idx))) < 0) {
 			spa_log_warn(this->log, "can't parse profile");
-			spa_debug_pod(0, NULL, param);
+			spa_debug_log_pod(this->log, SPA_LOG_LEVEL_DEBUG, 0, NULL, param);
 			return res;
 		}
 		activate_profile(this, idx);

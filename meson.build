@@ -1,5 +1,5 @@
 project('pipewire', ['c' ],
-  version : '0.3.64',
+  version : '0.3.65',
   license : [ 'MIT', 'LGPL-2.1-or-later', 'GPL-2.0-only' ],
   meson_version : '>= 0.59.0',
   default_options : [ 'warning_level=3',
@@ -265,6 +265,19 @@ readline_dep = dependency('readline', required : get_option('readline'))
 if not readline_dep.found()
   readline_dep = cc.find_library('readline', required : get_option('readline'))
 endif
+
+# Both the FFmpeg SPA plugin and the pw-cat FFmpeg integration use libavcodec.
+# But only the latter also needs libavformat.
+# Search for these libraries here, globally, so both of these subprojects can reuse the results.
+pw_cat_ffmpeg = get_option('pw-cat-ffmpeg')
+ffmpeg = get_option('ffmpeg')
+if pw_cat_ffmpeg.allowed() or ffmpeg.allowed()
+  avcodec_dep = dependency('libavcodec', required: pw_cat_ffmpeg.enabled() or ffmpeg.enabled())
+  avformat_dep = dependency('libavformat', required: pw_cat_ffmpeg.enabled())
+else
+  avcodec_dep = dependency('', required: false)
+endif
+cdata.set('HAVE_PW_CAT_FFMPEG_INTEGRATION', pw_cat_ffmpeg.allowed())
 
 summary({'readline (for pw-cli)': readline_dep.found()}, bool_yn: true, section: 'Misc dependencies')
 cdata.set('HAVE_READLINE', readline_dep.found())

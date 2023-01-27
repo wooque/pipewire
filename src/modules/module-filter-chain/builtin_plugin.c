@@ -44,6 +44,8 @@
 #include "convolver.h"
 #include "dsp-ops.h"
 
+#define MAX_RATES	32u
+
 static struct dsp_ops *dsp_ops;
 
 struct builtin {
@@ -439,21 +441,11 @@ struct convolver_impl {
 	struct convolver *conv;
 };
 
-static float *read_samples(const char *filename, float gain, int delay, int offset,
-		int length, int channel, long unsigned *rate, int *n_samples)
-{
-	float *samples;
 #ifdef HAVE_SNDFILE
-	SF_INFO info;
-	SNDFILE *f;
+static float *read_samples_from_sf(SNDFILE *f, SF_INFO info, float gain, int delay,
+		int offset, int length, int channel, long unsigned *rate, int *n_samples) {
+	float *samples;
 	int i, n;
-
-	spa_zero(info);
-	f = sf_open(filename, SFM_READ, &info) ;
-	if (f == NULL) {
-		pw_log_error("can't open %s", filename);
-		return NULL;
-	}
 
 	if (length <= 0)
 		length = info.frames;
@@ -467,13 +459,12 @@ static float *read_samples(const char *filename, float gain, int delay, int offs
 		return NULL;
 
 	samples = calloc(n * info.channels, sizeof(float));
-        if (samples == NULL)
+	if (samples == NULL)
 		return NULL;
 
 	if (offset > 0)
 		sf_seek(f, offset, SEEK_SET);
 	sf_readf_float(f, samples + (delay * info.channels), length);
-	sf_close(f);
 
 	channel = channel % info.channels;
 
@@ -483,10 +474,47 @@ static float *read_samples(const char *filename, float gain, int delay, int offs
 	*n_samples = n;
 	*rate = info.samplerate;
 	return samples;
+}
+#endif
+
+static float *read_closest(char **filenames, float gain, int delay, int offset,
+		int length, int channel, long unsigned *rate, int *n_samples)
+{
+#ifdef HAVE_SNDFILE
+	SF_INFO infos[MAX_RATES];
+	SNDFILE *fs[MAX_RATES];
+
+	spa_zero(infos);
+	spa_zero(fs);
+
+	int diff = INT_MAX;
+	uint32_t best = 0, i;
+
+	for (i = 0; i < MAX_RATES && filenames[i] && filenames[i][0]; i++) {
+		fs[i] = sf_open(filenames[i], SFM_READ, &infos[i]);
+		if (!fs[i])
+			continue;
+
+		if (labs((long)infos[i].samplerate - (long)*rate) < diff) {
+			best = i;
+			diff = labs((long)infos[i].samplerate - (long)*rate);
+			pw_log_debug("new closest match: %d", infos[i].samplerate);
+		}
+	}
+
+	pw_log_debug("loading %s", filenames[best]);
+	float *samples = read_samples_from_sf(fs[best], infos[best], gain, delay,
+		offset, length, channel, rate, n_samples);
+
+	for (i = 0; i < MAX_RATES; i++)
+		if (fs[i])
+			sf_close(fs[i]);
+
+	return samples;
 #else
 	pw_log_error("compiled without sndfile support, can't load samples: "
 			"using dirac impulse");
-	samples = calloc(1, sizeof(float));
+	float *samples = calloc(1, sizeof(float));
 	samples[0] = gain;
 	*n_samples = 1;
 	return samples;
@@ -597,6 +625,11 @@ static float *resample_buffer(float *samples, int *n_samples,
 	resample_free(&r);
 
 	*n_samples = total_out;
+
+	float gain = (float)in_rate / (float)out_rate;
+	for (uint32_t i = 0; i < total_out; i++)
+		out_samples[i] = out_samples[i] * gain;
+
 	return out_samples;
 
 error:
@@ -611,11 +644,12 @@ static void * convolver_instantiate(const struct fc_descriptor * Descriptor,
 {
 	struct convolver_impl *impl;
 	float *samples;
-	int offset = 0, length = 0, channel = index, n_samples;
-	struct spa_json it[2];
+	int offset = 0, length = 0, channel = index, n_samples, len;
+	uint32_t i = 0;
+	struct spa_json it[3];
 	const char *val;
-	char key[256];
-	char filename[PATH_MAX] = "";
+	char key[256], v[256];
+	char *filenames[MAX_RATES] = { 0 };
 	int blocksize = 0, tailsize = 0;
 	int delay = 0;
 	int resample_quality = RESAMPLE_DEFAULT_QUALITY;
@@ -656,9 +690,23 @@ static void * convolver_instantiate(const struct fc_descriptor * Descriptor,
 			}
 		}
 		else if (spa_streq(key, "filename")) {
-			if (spa_json_get_string(&it[1], filename, sizeof(filename)) <= 0) {
-				pw_log_error("convolver:filename requires a string");
+			if ((len = spa_json_next(&it[1], &val)) <= 0) {
+				pw_log_error("convolver:filename requires a string or an array");
 				return NULL;
+			}
+			if (spa_json_is_array(val, len)) {
+				spa_json_enter(&it[1], &it[2]);
+				while (spa_json_get_string(&it[2], v, sizeof(v)) > 0 &&
+					i < SPA_N_ELEMENTS(filenames)) {
+						filenames[i] = strdup(v);
+						i++;
+				}
+			}
+			else if (spa_json_parse_stringn(val, len, v, sizeof(v)) <= 0) {
+				pw_log_error("convolver:filename requires a string or an array");
+				return NULL;
+			} else {
+				filenames[i] = strdup(v);
 			}
 		}
 		else if (spa_streq(key, "offset")) {
@@ -688,7 +736,7 @@ static void * convolver_instantiate(const struct fc_descriptor * Descriptor,
 		else if (spa_json_next(&it[1], &val) < 0)
 			break;
 	}
-	if (!filename[0]) {
+	if (filenames[0] == NULL) {
 		pw_log_error("convolver:filename was not given");
 		return NULL;
 	}
@@ -698,17 +746,17 @@ static void * convolver_instantiate(const struct fc_descriptor * Descriptor,
 	if (offset < 0)
 		offset = 0;
 
-	if (spa_streq(filename, "/hilbert")) {
-		samples = create_hilbert(filename, gain, delay, offset,
+	if (spa_streq(filenames[0], "/hilbert")) {
+		samples = create_hilbert(filenames[0], gain, delay, offset,
 				length, &n_samples);
-	} else if (spa_streq(filename, "/dirac")) {
-		samples = create_dirac(filename, gain, delay, offset,
+	} else if (spa_streq(filenames[0], "/dirac")) {
+		samples = create_dirac(filenames[0], gain, delay, offset,
 				length, &n_samples);
 	} else {
 		rate = SampleRate;
-		samples = read_samples(filename, gain, delay, offset,
+		samples = read_closest(filenames, gain, delay, offset,
 				length, channel, &rate, &n_samples);
-		if (rate != SampleRate)
+		if (samples != NULL && rate != SampleRate)
 			samples = resample_buffer(samples, &n_samples,
 					rate, SampleRate, resample_quality);
 	}
@@ -717,13 +765,17 @@ static void * convolver_instantiate(const struct fc_descriptor * Descriptor,
 		return NULL;
 	}
 
+	for (i = 0; i < MAX_RATES; i++)
+		if (filenames[i])
+			free(filenames[i]);
+
 	if (blocksize <= 0)
 		blocksize = SPA_CLAMP(n_samples, 64, 256);
 	if (tailsize <= 0)
 		tailsize = SPA_CLAMP(4096, blocksize, 32768);
 
-	pw_log_info("using n_samples:%u %d:%d blocksize ir:%s", n_samples,
-			blocksize, tailsize, filename);
+	pw_log_info("using n_samples:%u %d:%d blocksize", n_samples,
+			blocksize, tailsize);
 
 	impl = calloc(1, sizeof(*impl));
 	if (impl == NULL)

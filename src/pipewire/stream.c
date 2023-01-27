@@ -30,14 +30,13 @@
 
 #include <spa/buffer/alloc.h>
 #include <spa/param/props.h>
+#include <spa/param/format-utils.h>
 #include <spa/node/io.h>
 #include <spa/node/utils.h>
 #include <spa/utils/ringbuffer.h>
 #include <spa/pod/filter.h>
 #include <spa/pod/dynamic.h>
-#include <spa/debug/format.h>
 #include <spa/debug/types.h>
-#include <spa/debug/pod.h>
 
 #define PW_ENABLE_DEPRECATED
 
@@ -637,8 +636,10 @@ static int impl_send_command(void *object, const struct spa_command *command)
 		if (stream->state == PW_STREAM_STATE_PAUSED) {
 			pw_log_debug("%p: start %d", stream, impl->direction);
 
-			if (impl->direction == SPA_DIRECTION_INPUT)
-				impl->io->status = SPA_STATUS_NEED_DATA;
+			if (impl->direction == SPA_DIRECTION_INPUT) {
+				if (impl->io != NULL)
+					impl->io->status = SPA_STATUS_NEED_DATA;
+			}
 			else if (!impl->process_rt && !impl->driving) {
 				copy_position(impl, impl->queued.incount);
 				call_process(impl);
@@ -998,6 +999,9 @@ static int impl_node_process_input(void *object)
 	struct spa_io_buffers *io = impl->io;
 	struct buffer *b;
 
+	if (io == NULL)
+		return -EIO;
+
 	pw_log_trace_fp("%p: process in status:%d id:%d ticks:%"PRIu64" delay:%"PRIi64,
 			stream, io->status, io->buffer_id, impl->time.ticks, impl->time.delay);
 
@@ -1037,6 +1041,9 @@ static int impl_node_process_output(void *object)
 	struct buffer *b;
 	int res;
 	bool ask_more;
+
+	if (io == NULL)
+		return -EIO;
 
 again:
 	pw_log_trace_fp("%p: process out status:%d id:%d", stream,
@@ -1397,7 +1404,8 @@ static void context_drained(void *data, struct pw_impl_node *node)
 		return;
 	if (impl->draining && impl->drained) {
 		impl->draining = false;
-		impl->io->status = SPA_STATUS_NEED_DATA;
+		if (impl->io != NULL)
+			impl->io->status = SPA_STATUS_NEED_DATA;
 		call_drained(impl);
 	}
 }
@@ -1891,11 +1899,12 @@ pw_stream_connect(struct pw_stream *stream,
 	impl->disconnecting = false;
 	stream_set_state(stream, PW_STREAM_STATE_CONNECTING, NULL);
 
-	if (target_id != PW_ID_ANY)
+	if ((str = getenv("PIPEWIRE_NODE")) != NULL)
+		pw_properties_set(stream->properties, PW_KEY_TARGET_OBJECT, str);
+	else if (target_id != PW_ID_ANY)
 		/* XXX this is deprecated but still used by the portal and its apps */
 		pw_properties_setf(stream->properties, PW_KEY_NODE_TARGET, "%d", target_id);
-	else if ((str = getenv("PIPEWIRE_NODE")) != NULL)
-		pw_properties_set(stream->properties, PW_KEY_TARGET_OBJECT, str);
+
 	if ((flags & PW_STREAM_FLAG_AUTOCONNECT) &&
 	    pw_properties_get(stream->properties, PW_KEY_NODE_AUTOCONNECT) == NULL) {
 		str = getenv("PIPEWIRE_AUTOCONNECT");

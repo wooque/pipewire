@@ -34,7 +34,9 @@ extern "C" {
  * \{
  */
 
+#include <spa/param/format.h>
 #include <spa/param/video/raw.h>
+#include <spa/param/video/dsp.h>
 #include <spa/param/video/encoded.h>
 
 struct spa_video_info {

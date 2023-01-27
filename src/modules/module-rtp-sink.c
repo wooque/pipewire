@@ -35,14 +35,15 @@
 #include <net/if.h>
 #include <ctype.h>
 
-#include <spa/param/audio/format-utils.h>
 #include <spa/utils/hook.h>
+#include <spa/utils/result.h>
 #include <spa/utils/ringbuffer.h>
 #include <spa/utils/json.h>
-#include <spa/debug/pod.h>
+#include <spa/param/audio/format-utils.h>
+#include <spa/debug/types.h>
 
 #include <pipewire/pipewire.h>
-#include <pipewire/private.h>
+#include <pipewire/impl.h>
 
 #include <module-rtp/sap.h>
 #include <module-rtp/rtp.h>
@@ -66,6 +67,8 @@
  * - `net.mtu = <int>`: MTU to use, default 1280
  * - `net.ttl = <int>`: TTL to use, default 1
  * - `net.loop = <bool>`: loopback multicast, default false
+ * - `sess.min-ptime = <int>`: minimum packet time in milliseconds, default 2
+ * - `sess.max-ptime = <int>`: maximum packet time in milliseconds, default 20
  * - `sess.name = <str>`: a session name
  * - `stream.props = {}`: properties to be passed to the stream
  *
@@ -100,6 +103,8 @@
  *         #net.mtu = 1280
  *         #net.ttl = 1
  *         #net.loop = false
+ *         #sess.min-ptime = 2
+ *         #sess.max-ptime = 20
  *         #sess.name = "PipeWire RTP stream"
  *         #audio.format = "S16BE"
  *         #audio.rate = 48000
@@ -154,6 +159,8 @@ PW_LOG_TOPIC_STATIC(mod_topic, "mod." NAME);
 		"net.ttl=<desired TTL, default:"SPA_STRINGIFY(DEFAULT_TTL)"> "			\
 		"net.loop=<desired loopback, default:"SPA_STRINGIFY(DEFAULT_LOOP)"> "		\
 		"sess.name=<a name for the session> "						\
+		"sess.min-ptime=<minimum packet time in milliseconds, default:2> "		\
+		"sess.max-ptime=<maximum packet time in milliseconds, default:20> "		\
 		"audio.format=<format, default:"DEFAULT_FORMAT"> "				\
 		"audio.rate=<sample rate, default:"SPA_STRINGIFY(DEFAULT_RATE)"> "		\
 		"audio.channels=<number of channels, default:"SPA_STRINGIFY(DEFAULT_CHANNELS)"> "\
@@ -215,6 +222,7 @@ struct impl {
 	bool mcast_loop;
 	uint32_t min_ptime;
 	uint32_t max_ptime;
+	uint32_t pbytes;
 
 	struct sockaddr_storage src_addr;
 	socklen_t src_len;
@@ -275,7 +283,7 @@ static void flush_packets(struct impl *impl)
 
 	avail = spa_ringbuffer_get_read_index(&impl->ring, &index);
 
-	tosend = SPA_ROUND_DOWN(impl->mtu, impl->frame_size);
+	tosend = impl->pbytes;
 
 	if (avail < tosend)
 		return;
@@ -442,6 +450,7 @@ static int make_socket(struct sockaddr_storage *src, socklen_t src_len,
 		goto error;
 	}
 	if (is_multicast((struct sockaddr*)dst, dst_len)) {
+		val = loop;
 		if (setsockopt(fd, IPPROTO_IP, IP_MULTICAST_LOOP, &val, sizeof(val)) < 0)
 			pw_log_warn("setsockopt(IP_MULTICAST_LOOP) failed: %m");
 
@@ -480,7 +489,7 @@ static int setup_stream(struct impl *impl)
 
 	if (pw_properties_get(props, PW_KEY_NODE_LATENCY) == NULL) {
 		pw_properties_setf(props, PW_KEY_NODE_LATENCY,
-				"%d/%d", impl->mtu / impl->frame_size,
+				"%d/%d", impl->pbytes / impl->frame_size,
 				impl->info.rate);
 	}
 	pw_properties_setf(props, PW_KEY_NODE_RATE, "1/%d", impl->info.rate);
@@ -578,16 +587,20 @@ static void send_sap(struct impl *impl, bool bye)
 			"c=IN %s %s%s\n"
 			"t=%u 0\n"
 			"a=recvonly\n"
+			"a=tool:PipeWire %s\n"
 			"m=audio %u RTP/AVP %i\n"
 			"a=rtpmap:%i %s/%u/%u\n"
-			"a=type:broadcast\n",
+			"a=type:broadcast\n"
+			"a=ptime:%d\n",
 			user_name, impl->ntp, af, src_addr,
 			impl->session_name,
 			af, dst_addr, dst_ttl,
 			impl->ntp,
+			pw_get_library_version(),
 			impl->port, impl->payload,
 			impl->payload, impl->format_info->mime,
-			impl->info.rate, impl->info.channels);
+			impl->info.rate, impl->info.channels,
+			(impl->pbytes / impl->frame_size) * 1000 / impl->info.rate);
 
 	iov[3].iov_base = buffer;
 	iov[3].iov_len = strlen(buffer);
@@ -780,7 +793,7 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	struct impl *impl;
 	struct pw_properties *props = NULL, *stream_props = NULL;
 	uint32_t id = pw_global_get_id(pw_impl_module_get_global(module));
-	uint32_t pid = getpid(), port;
+	uint32_t pid = getpid(), port, min_bytes, max_bytes;
 	char addr[64];
 	const char *str;
 	int res = 0;
@@ -897,6 +910,12 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	impl->min_ptime = pw_properties_get_uint32(props, "sess.min-ptime", DEFAULT_MIN_PTIME);
 	impl->max_ptime = pw_properties_get_uint32(props, "sess.max-ptime", DEFAULT_MAX_PTIME);
 
+	min_bytes = (impl->min_ptime * impl->info.rate / 1000) * impl->frame_size;
+	max_bytes = (impl->max_ptime * impl->info.rate / 1000) * impl->frame_size;
+
+	impl->pbytes = SPA_ROUND_DOWN(impl->mtu, impl->frame_size);
+	impl->pbytes = SPA_CLAMP(impl->pbytes, min_bytes, max_bytes);
+
 	if ((str = pw_properties_get(props, "sess.name")) == NULL)
 		pw_properties_setf(props, "sess.name", "PipeWire RTP Stream on %s",
 				pw_get_host_name());
@@ -911,6 +930,8 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	pw_properties_setf(stream_props, "rtp.destination.port", "%u", impl->port);
 	pw_properties_setf(stream_props, "rtp.mtu", "%u", impl->mtu);
 	pw_properties_setf(stream_props, "rtp.ttl", "%u", impl->ttl);
+	pw_properties_setf(stream_props, "rtp.ptime", "%u",
+			(impl->pbytes / impl->frame_size) * 1000 / impl->info.rate);
 
 	impl->core = pw_context_get_object(impl->module_context, PW_TYPE_INTERFACE_Core);
 	if (impl->core == NULL) {

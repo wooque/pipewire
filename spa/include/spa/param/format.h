@@ -68,6 +68,9 @@ enum spa_media_subtype {
 	SPA_MEDIA_SUBTYPE_g729,
 	SPA_MEDIA_SUBTYPE_amr,
 	SPA_MEDIA_SUBTYPE_gsm,
+	SPA_MEDIA_SUBTYPE_alac,		/** since 0.3.65 */
+	SPA_MEDIA_SUBTYPE_flac,		/** since 0.3.65 */
+	SPA_MEDIA_SUBTYPE_ape,		/** since 0.3.65 */
 
 	SPA_MEDIA_SUBTYPE_START_Video	= 0x20000,
 	SPA_MEDIA_SUBTYPE_h264,
@@ -106,16 +109,25 @@ enum spa_format {
 
 	/* Audio format keys */
 	SPA_FORMAT_START_Audio = 0x10000,
-	SPA_FORMAT_AUDIO_format,	/**< audio format, (Id enum spa_audio_format) */
-	SPA_FORMAT_AUDIO_flags,		/**< optional flags (Int) */
-	SPA_FORMAT_AUDIO_rate,		/**< sample rate (Int) */
-	SPA_FORMAT_AUDIO_channels,	/**< number of audio channels (Int) */
-	SPA_FORMAT_AUDIO_position,	/**< channel positions (Id enum spa_audio_position) */
+	SPA_FORMAT_AUDIO_format,		/**< audio format, (Id enum spa_audio_format) */
+	SPA_FORMAT_AUDIO_flags,			/**< optional flags (Int) */
+	SPA_FORMAT_AUDIO_rate,			/**< sample rate (Int) */
+	SPA_FORMAT_AUDIO_channels,		/**< number of audio channels (Int) */
+	SPA_FORMAT_AUDIO_position,		/**< channel positions (Id enum spa_audio_position) */
 
-	SPA_FORMAT_AUDIO_iec958Codec,	/**< codec used (IEC958) (Id enum spa_audio_iec958_codec) */
+	SPA_FORMAT_AUDIO_iec958Codec,		/**< codec used (IEC958) (Id enum spa_audio_iec958_codec) */
 
-	SPA_FORMAT_AUDIO_bitorder,	/**< bit order (Id enum spa_param_bitorder) */
-	SPA_FORMAT_AUDIO_interleave,	/**< Interleave bytes (Int) */
+	SPA_FORMAT_AUDIO_bitorder,		/**< bit order (Id enum spa_param_bitorder) */
+	SPA_FORMAT_AUDIO_interleave,		/**< Interleave bytes (Int) */
+	SPA_FORMAT_AUDIO_bitrate,		/**< bit rate (Int) */
+	SPA_FORMAT_AUDIO_blockAlign,    	/**< audio data block alignment (Int) */
+
+	SPA_FORMAT_AUDIO_AAC_streamFormat,	/**< AAC stream format, (Id enum spa_audio_aac_stream_format) */
+
+	SPA_FORMAT_AUDIO_WMA_profile,		/**< WMA profile (Id enum spa_audio_wma_profile) */
+
+	SPA_FORMAT_AUDIO_AMR_bandMode,		/**< AMR band mode (Id enum spa_audio_amr_band_mode) */
+
 
 	/* Video Format keys */
 	SPA_FORMAT_START_Video = 0x20000,

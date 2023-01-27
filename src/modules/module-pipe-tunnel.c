@@ -42,7 +42,7 @@
 #include <spa/utils/json.h>
 #include <spa/utils/ringbuffer.h>
 #include <spa/utils/dll.h>
-#include <spa/debug/pod.h>
+#include <spa/debug/types.h>
 #include <spa/pod/builder.h>
 #include <spa/param/audio/format-utils.h>
 #include <spa/param/latency-utils.h>
@@ -50,7 +50,6 @@
 
 #include <pipewire/impl.h>
 #include <pipewire/i18n.h>
-#include <pipewire/private.h>
 
 /** \page page_module_pipe_tunnel PipeWire Module: Unix Pipe Tunnel
  *
@@ -665,6 +664,7 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	copy_props(impl, props, PW_KEY_NODE_VIRTUAL);
 	copy_props(impl, props, PW_KEY_MEDIA_CLASS);
 	copy_props(impl, props, PW_KEY_TARGET_OBJECT);
+	copy_props(impl, props, "pipe.filename");
 
 	parse_audio_info(impl->stream_props, &impl->info);
 
