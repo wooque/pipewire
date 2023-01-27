@@ -11,6 +11,7 @@ pipewire (0.3.65-1) UNRELEASED; urgency=medium
   * Cherry-pick upstream recommended patches:
       - fba7083f  module-combine-stream was not installed
   * Install new module-combine-stream in libpipewire-0.3-modules
+  * Update symbols file
 
  -- Dylan Aïssi <daissi@debian.org>  Fri, 27 Jan 2023 11:12:40 +0100
 
