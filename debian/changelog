@@ -8,6 +8,8 @@ pipewire (0.3.65-1) UNRELEASED; urgency=medium
       - ccedf172: fixed bug in AVX optimizations causing crackling
       - a979c0f4: fixes compilation issues with deprecated keys
       - Reproducible_doxygen.patch
+  * Cherry-pick upstream recommended patches:
+      - fba7083f  module-combine-stream was not installed
 
  -- Dylan Aïssi <daissi@debian.org>  Fri, 27 Jan 2023 11:12:40 +0100
 
