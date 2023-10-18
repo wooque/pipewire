@@ -1,0 +1,49 @@
+Description: Use malloc_trim() after destroying a node to release memory.
+ Fixes pipewire-pulse excessive memory usage. Backport of following commits:
+ https://gitlab.freedesktop.org/pipewire/pipewire/-/commit/7e2f6757fcc4eefd29cb47d8292714ac8014b9ef
+ https://gitlab.freedesktop.org/pipewire/pipewire/-/commit/8680c74d1bd83b4969c9305171076b36f56d82fa
+Author: Vuk Mirovic <contact@vukmirovic.org>
+Origin: backport
+Bug: https://gitlab.freedesktop.org/pipewire/pipewire/-/issues/1840
+Bug-Debian: https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=1015915
+Forwarded: not-needed
+Reviewed-by: Dylan Aïssi <daissi@debian.org>
+Last-Update: 2023-10-18
+---
+This patch header follows DEP-3: http://dep.debian.net/deps/dep3/
+Index: source/meson.build
+===================================================================
+--- source.orig/meson.build
++++ source/meson.build
+@@ -401,6 +401,7 @@ check_functions = [
+   ['reallocarray', '#include <stdlib.h>', ['-D_GNU_SOURCE'], []],
+   ['sigabbrev_np', '#include <string.h>', ['-D_GNU_SOURCE'], []],
+   ['XSetIOErrorExitHandler', '#include <X11/Xlib.h>', [], [x11_dep]],
++  ['malloc_trim', '#include <malloc.h>', [], []],
+ ]
+
+ foreach f : check_functions
+Index: source/src/pipewire/impl-node.c
+===================================================================
+--- source.orig/src/pipewire/impl-node.c
++++ source/src/pipewire/impl-node.c
+@@ -28,6 +28,7 @@
+ #include <unistd.h>
+ #include <errno.h>
+ #include <time.h>
++#include <malloc.h>
+
+ #include <spa/support/system.h>
+ #include <spa/pod/parser.h>
+@@ -1945,6 +1946,11 @@ void pw_impl_node_destroy(struct pw_impl
+
+ 	spa_system_close(context->data_system, node->source.fd);
+ 	free(impl);
++
++#ifdef HAVE_MALLOC_TRIM
++	int res = malloc_trim(0);
++	pw_log_debug("malloc_trim(): %d", res);
++#endif
+ }
+
+ SPA_EXPORT
